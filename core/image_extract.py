@@ -39,7 +39,17 @@ def extract_image_urls(
     exts = image_exts or IMAGE_EXTS
     urls: list[str] = []
 
+    visited: set[int] = set()
+
     def walk(chain) -> None:
+        if chain is None or isinstance(chain, (str, bytes)):
+            return
+        marker = id(chain)
+        if marker in visited:
+            return
+        visited.add(marker)
+        if not isinstance(chain, (list, tuple)):
+            chain = [chain]
         for comp in chain:
             if reply_types and isinstance(comp, reply_types):
                 sub = getattr(comp, "chain", None)
@@ -62,6 +72,13 @@ def extract_image_urls(
                     tuple(exts)
                 ):
                     urls.append(ref)
+                continue
+            # AstrBot 已展开的合并转发通常是 Node/Nodes；避免在 core 层
+            # 绑定具体组件版本，按公共容器字段递归读取。
+            for attr in ("chain", "content", "nodes", "message", "messages"):
+                child = getattr(comp, attr, None)
+                if child is not None:
+                    walk(child)
 
     walk(components)
     return urls

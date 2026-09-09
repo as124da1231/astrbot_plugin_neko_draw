@@ -89,25 +89,30 @@ class DrawingHandler:
         self, params: dict, has_images: bool
     ) -> tuple[Optional[ModelTemplate], str]:
         """选择模型模板，返回 (模板, 模式标识)。"""
+        def configured_default(name: str, image_mode: bool) -> Optional[ModelTemplate]:
+            template = self.templates.resolve(name)
+            if (
+                template is not None
+                and template.enabled_as_default
+                and bool(template.refer_field) is image_mode
+            ):
+                return template
+            return self.templates.fallback(image_mode)
+
         model_flag = str(params.get("model", "") or "").strip()
         # 别名：text / edit
         if model_flag == MODEL_ALIAS_TEXT:
-            t = self.templates.resolve(self.default_text_model)
-            return (t, MODEL_ALIAS_TEXT)
+            return configured_default(self.default_text_model, False), MODEL_ALIAS_TEXT
         if model_flag == MODEL_ALIAS_EDIT:
-            t = self.templates.resolve(self.default_edit_model)
-            return (t, MODEL_ALIAS_EDIT)
+            return configured_default(self.default_edit_model, True), MODEL_ALIAS_EDIT
         # 显式模板名
         if model_flag:
             t = self.templates.resolve(model_flag)
             return (t, model_flag)
         # 默认：带图走编辑模板，无图走文生图模板
         if has_images:
-            t = self.templates.resolve(self.default_edit_model)
-            if t is not None:
-                return t, MODEL_ALIAS_EDIT
-        t = self.templates.resolve(self.default_text_model)
-        return (t, MODEL_ALIAS_TEXT)
+            return configured_default(self.default_edit_model, True), MODEL_ALIAS_EDIT
+        return configured_default(self.default_text_model, False), MODEL_ALIAS_TEXT
 
     async def _collect_refer_data_uris(
         self, image_urls: list[str], max_images: int
@@ -153,7 +158,7 @@ class DrawingHandler:
         # 提示词为空保护
         if not parsed.text.strip():
             return HandlerResult(
-                text="提示词不能为空。示例：猫娘画图 一只戴帽子的猫 --aspect_ratio 16:9"
+                text="提示词不能为空。示例：nd 一只戴帽子的猫 --aspect_ratio 16:9"
             )
 
         # 3. 选择模型模板
@@ -203,10 +208,10 @@ class DrawingHandler:
         if provider_client is None:
             available = "、".join(self.providers.keys()) or "（无）"
             return HandlerResult(
-                text=f"提供商「{template.provider}」未配置。可用提供商：{available}"
+                text=f"模型提供商「{template.provider}」未配置。可用模型提供商：{available}"
             )
         logger.info(
-            "[IMAGE] 触发词=%s 模板=%s 提供商=%s 模型=%s 参考图=%d 参数=%s",
+            "[IMAGE] 触发词=%s 模板=%s 模型提供商=%s 模型=%s 参考图=%d 参数=%s",
             parsed.trigger, template.name, template.provider, template.model,
             len(refer_uris), parsed.params,
         )
@@ -238,7 +243,7 @@ class DrawingHandler:
             )
         local_paths: list[str] = []
         for url in output_urls:
-            path = await self.downloader.download(url)
+            path = await self.downloader.download(url, proxy=getattr(provider_client, "proxy", None))
             if path:
                 local_paths.append(path)
         if not local_paths:

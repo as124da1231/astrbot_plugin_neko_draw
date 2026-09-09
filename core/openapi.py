@@ -11,7 +11,7 @@
 import asyncio
 import base64
 import logging
-from typing import Optional
+from typing import Mapping, Optional
 
 import aiohttp
 
@@ -32,12 +32,16 @@ class OpenAPIClient:
         proxy: Optional[str] = None,
         timeout: float = 300,
         max_concurrency: int = 2,
+        custom_headers: Optional[Mapping[str, str]] = None,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.proxy = proxy
         self.timeout = timeout
         self.max_concurrency = max(1, int(max_concurrency))
+        self.custom_headers = {
+            str(key): str(value) for key, value in (custom_headers or {}).items()
+        }
         self._semaphore = asyncio.Semaphore(self.max_concurrency)
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -50,10 +54,12 @@ class OpenAPIClient:
         return self._session
 
     def _headers(self) -> dict:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        headers.update(self.custom_headers)
+        return headers
 
     async def generate(self, model: str, payload: dict) -> list[str]:
         """提交生成并返回图片 URL 列表（同步接口，无需轮询）。
@@ -77,16 +83,24 @@ class OpenAPIClient:
 
     @staticmethod
     def _extract_urls(data: dict) -> list[str]:
-        """从 OpenAI 兼容响应中提取图片 URL（支持 url 和 b64_json）。"""
-        items = data.get("data") or []
+        """兼容 OpenAI 的 data 与 SiliconFlow 的 images 响应结构。"""
+        items = data.get("data") or data.get("images") or data.get("output") or []
+        if isinstance(items, dict):
+            items = items.get("images") or items.get("data") or [items]
         urls: list[str] = []
         for item in items:
             if not isinstance(item, dict):
+                if isinstance(item, str) and item.strip():
+                    urls.append(item.strip())
                 continue
-            if item.get("url"):
-                urls.append(str(item["url"]))
-            elif item.get("b64_json"):
-                urls.append(f"data:image/png;base64,{item['b64_json']}")
+            url = item.get("url") or item.get("image_url")
+            encoded = item.get("b64_json") or item.get("base64") or item.get("b64")
+            if isinstance(url, dict):
+                url = url.get("url")
+            if url:
+                urls.append(str(url))
+            elif encoded:
+                urls.append(f"data:image/png;base64,{encoded}")
         if not urls and data.get("url"):
             # 某些兼容平台直接返回 {url: "..."}
             urls.append(str(data["url"]))

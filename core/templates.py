@@ -15,27 +15,16 @@ from typing import Any, Optional
 _NUM_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
-PROVIDERS = {
-    'seedream_text': 'wavespeed', 'seedream_edit': 'wavespeed',
-    'runninghub_text': 'runninghub', 'runninghub_edit': 'runninghub',
-    'openapi_text': 'openapi',
-}
-
-
 def derive_provider(raw):
-    # 模板类型决定 API 客户端，从而决定使用哪一组 URL 与 Key。
-    template_key = raw.get('__template_key')
-    if template_key in PROVIDERS:
-        return PROVIDERS[template_key]
-    # 仅未知的历史/自定义模板类型保留显式 provider，维持向后兼容。
-    return str(raw.get('provider') or 'wavespeed').strip().lower()
+    """模型模板按名称选择用户配置的模型提供商。"""
+    return str(raw.get("provider") or "").strip()
 
 
 @dataclass
 class ModelTemplate:
     name: str                       # 模板名（--model 引用）
     model: str                      # 模型名（拼 URL）
-    provider: str = "wavespeed"     # API 提供商：wavespeed / runninghub
+    provider: str = ""              # 模型提供商名称
     enabled: bool = True
     enabled_as_default: bool = True
     fallback_order: int = 0
@@ -119,6 +108,20 @@ class TemplateManager:
 
     def enabled_names(self) -> list[str]:
         return [n for n, t in self.templates.items() if t.enabled]
+
+    def default_candidates(self, has_images: bool) -> list[ModelTemplate]:
+        """按数字从小到大返回允许充当默认值且模式匹配的模板。"""
+        candidates = [
+            template for template in self.templates.values()
+            if template.enabled
+            and template.enabled_as_default
+            and bool(template.refer_field) is has_images
+        ]
+        return sorted(candidates, key=lambda template: template.fallback_order)
+
+    def fallback(self, has_images: bool) -> Optional[ModelTemplate]:
+        candidates = self.default_candidates(has_images)
+        return candidates[0] if candidates else None
 
     def resolve(self, name: str) -> Optional[ModelTemplate]:
         """按名称解析模板（仅启用）。"""

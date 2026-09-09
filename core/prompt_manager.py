@@ -2,7 +2,7 @@
 """预设提示词管理器。
 
 预设提示词保存在配置中（首次运行写入数据目录 JSON），支持
-/猫娘添加、/猫娘删除、/猫娘列表、/猫娘提示词 命令动态维护。
+/nc pa、/nc pd、/nc pl、/nc ps 指令动态维护。
 
 内部统一存储为 dict 列表：[{"trigger": str, "prompt": str}, ...]
 兼容旧版字符串列表格式（自动迁移为 dict）。
@@ -10,7 +10,7 @@
 加载优先级：
 1. WebUI 配置（_conf_schema.json 中的 prompt 字段）—— 最高优先，
    加载时同步写入 prompts.json，确保面板修改即时生效
-2. prompts.json —— 仅当 WebUI 配置为空时使用，存放 /猫娘添加 等
+2. prompts.json —— 仅当 WebUI 配置为空时使用，存放 /nc pa 等指令变更
    命令动态维护的预设
 3. DEFAULT_PROMPTS —— 兜底默认值
 """
@@ -21,8 +21,8 @@ from typing import Optional
 from .storage import read_json, write_json
 
 DEFAULT_PROMPTS = [
-    {"trigger": "猫娘画图", "prompt": "{{user_text}}", "reference_image": [], "reference_image_position": "before"},
-    {"trigger": "猫娘改图", "prompt": "{{user_text}} --model edit", "reference_image": [], "reference_image_position": "before"},
+    {"trigger": "nd", "prompt": "{{user_text}}", "reference_image": [], "reference_image_position": "before"},
+    {"trigger": "nde", "prompt": "{{user_text}} --model edit", "reference_image": [], "reference_image_position": "before"},
 ]
 
 
@@ -78,7 +78,7 @@ class PromptManager:
 
         合并规则：
         - WebUI 配置中的预设为权威来源（同触发词时覆盖本地）
-        - 本地 prompts.json 中独有的预设（通过 /猫娘添加 命令添加）予以保留
+        - 本地 prompts.json 中独有的预设（通过 /nc pa 指令添加）予以保留
         - 合并结果回写 prompts.json，确保命令维护的预设持久化
         """
         # 1. 归一化 WebUI 配置
@@ -171,7 +171,7 @@ class PromptManager:
         trigger = trigger.strip()
         prompt_body = prompt_body.strip()
         if not trigger:
-            return False, "用法：/猫娘添加 <触发词> <提示词内容>"
+            return False, "用法：/nc pa <触发词> <提示词内容>"
         new_item = {"trigger": trigger, "prompt": prompt_body, "reference_image": [], "reference_image_position": "before", "__template_key": "prompt_item"}
         for i, p in enumerate(self.prompts):
             if self.get_trigger(p) == trigger:

@@ -20,11 +20,14 @@ class OutputService:
         self.save_dir = save_dir
         self.plugin_dir = plugin_dir
         self._image_summary_quotes = self._load_summary_quotes()
+        self._apng_summary_quotes = self._load_summary_quotes("apng_")
 
-    def _load_summary_quotes(self) -> list[str]:
+    def _load_summary_quotes(self, prefix: str = "") -> list[str]:
         """加载图片外显金句：配置列表 + 金句文件，合并去重。"""
-        quotes: list[str] = list(self.conf.get("image_summary_quotes", []) or [])
-        for file_path in self.conf.get("image_summary_quotes_files", []) or []:
+        quotes_key = f"{prefix}image_summary_quotes"
+        files_key = f"{prefix}image_summary_quotes_files"
+        quotes: list[str] = list(self.conf.get(quotes_key, []) or [])
+        for file_path in self.conf.get(files_key, []) or []:
             path = Path(file_path)
             if not path.exists():
                 logger.warning(f"[neko_draw] 金句文件不存在，已跳过：{path}")
@@ -73,12 +76,13 @@ class OutputService:
                     return candidate_path
         return None
 
-    def _resolve_apng_first_frame(self) -> Optional[Path]:
+    def _resolve_apng_first_frame(self, profile: str = "apng") -> Optional[Path]:
         """解析 APNG 第一帧图片路径，支持 file 上传、手动路径和内置默认图。
 
         优先级：用户上传的 file（取最后一张）> 手动配置的路径 > 内置默认图。
         """
-        raw = self.conf.get("apng_first_frame_path", "")
+        key = "drawing_first_frame_path" if profile == "drawing" else "apng_first_frame_path"
+        raw = self.conf.get(key, "")
         resolved = self._resolve_file_ref(raw)
         if resolved is not None:
             return resolved
@@ -102,15 +106,15 @@ class OutputService:
             logger.warning("[neko_draw] Pillow 未安装，APNG 功能已禁用")
             return image_paths
 
-        first_file = self._resolve_apng_first_frame()
+        first_file = self._resolve_apng_first_frame("drawing")
         if first_file is None:
             logger.warning("[neko_draw] 未找到 APNG 第一帧图片（含内置默认图），APNG 功能已禁用")
             return image_paths
 
-        first_duration = int(self.conf.get("apng_first_frame_duration", 100))
-        second_duration = int(self.conf.get("apng_second_frame_duration", 20000))
-        loop = int(self.conf.get("apng_loop", 0))
-        optimize = bool(self.conf.get("apng_optimize", True))
+        first_duration = int(self.conf.get("drawing_first_frame_duration", 100))
+        second_duration = int(self.conf.get("drawing_second_frame_duration", 20000))
+        loop = int(self.conf.get("drawing_apng_loop", 0))
+        optimize = bool(self.conf.get("drawing_apng_optimize", True))
 
         result_paths = []
         try:
@@ -160,22 +164,136 @@ class OutputService:
 
         return result_paths
 
-    def _image_chain_with_at(self, event: AstrMessageEvent, image_paths: list[str]) -> list:
+    def cleanup_transient_apngs(
+        self, delivery_paths: list[str], original_paths: list[str]
+    ) -> None:
+        """Delete generated-image APNG wrappers while keeping original images.
+
+        The strict directory and filename checks exclude APNG-command works,
+        which remain governed by their independent history/cleanup setting.
+        """
+        originals = {str(Path(path).resolve()) for path in original_paths}
+        save_root = self.save_dir.resolve()
+        for raw_path in delivery_paths:
+            path = Path(raw_path)
+            try:
+                resolved = path.resolve()
+                if str(resolved) in originals or resolved.parent != save_root:
+                    continue
+                if not resolved.name.startswith("apng_") or resolved.suffix.lower() != ".png":
+                    continue
+                resolved.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(f"[neko_draw] 临时生图 APNG 清理失败 {path}: {exc}")
+
+    def make_apng(
+        self,
+        image_paths: list[str],
+        duration_ms: int,
+        loop: int = 0,
+        durations: Optional[list[int]] = None,
+    ) -> str:
+        """将多张图片按消息顺序合成为 APNG，并返回生成文件路径。"""
+        if PILImage is None:
+            raise RuntimeError("Pillow 未安装，无法制作 APNG")
+        max_frames = int(self.conf.get("apng_maker_max_frames", 20))
+        max_dimension = int(self.conf.get("apng_maker_max_dimension", 2048))
+        if not 2 <= len(image_paths) <= max_frames:
+            raise ValueError(f"图片数量必须为 2～{max_frames} 张")
+        if not 100 <= int(duration_ms) <= 60000:
+            raise ValueError("每帧间隔必须为 0.1～60 秒")
+        if not 0 <= int(loop) <= 100:
+            raise ValueError("循环次数必须为 0～100，0 表示无限循环")
+        frame_durations = durations or [int(duration_ms)] * len(image_paths)
+        if len(frame_durations) != len(image_paths):
+            raise ValueError("帧时长数量与图片数量不一致")
+
+        opened = []
+        try:
+            for path in image_paths:
+                with PILImage.open(path) as source:
+                    source.seek(0)
+                    opened.append(source.convert("RGBA"))
+            width = min(max(image.width for image in opened), max_dimension)
+            height = min(max(image.height for image in opened), max_dimension)
+            try:
+                resample = PILImage.Resampling.LANCZOS
+            except AttributeError:
+                resample = PILImage.LANCZOS
+
+            frames = []
+            for image in opened:
+                image.thumbnail((width, height), resample)
+                canvas = PILImage.new("RGBA", (width, height), (255, 255, 255, 255))
+                offset = ((width - image.width) // 2, (height - image.height) // 2)
+                canvas.paste(image, offset, image)
+                frames.append(canvas)
+
+            out_path = self.save_dir / f"apng_maker_{uuid.uuid4().hex}.png"
+            frames[0].save(
+                out_path,
+                format="PNG",
+                save_all=True,
+                append_images=frames[1:],
+                duration=[max(20, int(value)) for value in frame_durations],
+                loop=int(loop),
+                optimize=bool(self.conf.get("apng_optimize", True)),
+                disposal=2,
+            )
+            return str(out_path)
+        finally:
+            for image in opened:
+                image.close()
+
+    def save_first_frame(self, source_path: str) -> Path:
+        """验证图片并保存为 QQ 指令设置的持久首帧。"""
+        files_dir = self.data_dir / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        target = files_dir / "apng_first_frame_qq.png"
+        with PILImage.open(source_path) as source:
+            source.seek(0)
+            source.convert("RGBA").save(target, format="PNG")
+        return target
+
+    def save_history_sources(self, source_paths: list[str]) -> list[str]:
+        """保存图片编辑所用原图，供生成历史详情查看。"""
+        target_dir = self.data_dir / "history_inputs"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved = []
+        for index, source_path in enumerate(source_paths):
+            try:
+                target = target_dir / f"source_{uuid.uuid4().hex}_{index}.png"
+                with PILImage.open(source_path) as source:
+                    source.seek(0)
+                    source.convert("RGBA").save(target, format="PNG")
+                saved.append(str(target))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[neko_draw] 编辑原图保存失败，已跳过: {exc}")
+        return saved
+
+    @staticmethod
+    def _profile_key(profile: str, key: str) -> str:
+        return f"apng_{key}" if profile == "apng" else key
+
+    def _image_chain_with_at(
+        self, event: AstrMessageEvent, image_paths: list[str], profile: str = "drawing"
+    ) -> list:
         """构建带 @ 触发者的图片消息链（用于普通图片发送）。
 
         若开启了 enable_at_sender 且是群聊，则在图片前插入 At 组件；
         私聊或未开启时直接返回图片列表。
         """
         components = []
-        if bool(self.conf.get("enable_at_sender", False)) and event.get_group_id():
+        at_key = self._profile_key(profile, "enable_at_sender")
+        if bool(self.conf.get(at_key, False)) and event.get_group_id():
             components.append(At(event.get_sender_id()))
         components.extend([Image.fromFileSystem(p) for p in image_paths])
         return components
 
     async def _send_image_with_summary(
-        self, event: AstrMessageEvent, image_paths: list[str]
+        self, event: AstrMessageEvent, image_paths: list[str], profile: str = "drawing"
     ) -> bool:
-        """发送带外显金句的图片消息（参考 astrbot_plugin_outputpro 的 summary 实现）。
+        """发送带外显金句的图片消息。
 
         原理：把 Image 组件转成 OneBot JSON，在图片消息段的 data 中
         设置 summary 字段为随机金句，然后直接用 bot.send() 发送原始
@@ -203,10 +321,12 @@ class OutputService:
             chain = MessageChain([Image.fromFileSystem(image_paths[0])])
             obmsg = await event._parse_onebot_json(chain)
             # 设置图片外显金句（核心）
-            quote = random.choice(self._image_summary_quotes)
+            quotes = self._apng_summary_quotes if profile == "apng" else self._image_summary_quotes
+            quote = random.choice(quotes)
             obmsg[0]["data"]["summary"] = quote
             # 若开启了 @ 触发者且是群聊，在消息前插入 at 消息段
-            if bool(self.conf.get("enable_at_sender", False)) and event.get_group_id():
+            at_key = self._profile_key(profile, "enable_at_sender")
+            if bool(self.conf.get(at_key, False)) and event.get_group_id():
                 obmsg.insert(0, {"type": "at", "data": {"qq": str(event.get_sender_id())}})
             # 直接发送原始 OneBot 消息
             await event.bot.send(event.message_obj.raw_message, obmsg)
@@ -218,7 +338,8 @@ class OutputService:
             return False
 
     async def _send_forward_message(
-        self, event: AstrMessageEvent, image_paths: list[str], summary: str = ""
+        self, event: AstrMessageEvent, image_paths: list[str], summary: str = "",
+        profile: str = "drawing",
     ) -> bool:
         """直接调用 OneBot v11 原始 API 发送合并转发消息。
 
@@ -241,7 +362,8 @@ class OutputService:
         # 构建节点内容：图片（可选带 summary 外显金句）
         content = []
         # 若开启了 @ 触发者且是群聊，在节点内容最前面插入 at 消息段
-        if bool(self.conf.get("enable_at_sender", False)) and group_id:
+        at_key = self._profile_key(profile, "enable_at_sender")
+        if bool(self.conf.get(at_key, False)) and group_id:
             content.append({"type": "at", "data": {"qq": str(user_id)}})
         for p in image_paths:
             img_data = {"file": f"file://{p}"}
@@ -249,7 +371,8 @@ class OutputService:
                 img_data["summary"] = summary
             content.append({"type": "image", "data": img_data})
 
-        nickname = str(self.conf.get("forward_node_name", "")).strip()
+        nickname_key = self._profile_key(profile, "forward_node_name")
+        nickname = str(self.conf.get(nickname_key, "")).strip()
         if not nickname:
             nickname = "猫娘画图"
 

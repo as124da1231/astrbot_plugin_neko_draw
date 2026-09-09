@@ -11,12 +11,14 @@ import os
 import re
 import uuid
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
 
 import aiohttp
 
 _DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+);base64,(?P<data>.+)$", re.S)
+logger = logging.getLogger("neko_draw")
 
 
 class Downloader:
@@ -41,6 +43,18 @@ class Downloader:
             "image/webp": ".webp",
             "image/gif": ".gif",
         }.get(mime.split(";")[0].lower(), ".png")
+
+    @staticmethod
+    def _detect_image_mime(raw: bytes) -> Optional[str]:
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if raw.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if raw.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            return "image/webp"
+        return None
 
     def to_data_uri(self, url_or_path: str) -> Optional[str]:
         """把 URL / 本地路径 / data URI 统一转成 data URI（WaveSpeed edit 入参）。"""
@@ -96,23 +110,48 @@ class Downloader:
         path.write_bytes(raw)
         return str(path)
 
-    async def download(self, url: str) -> Optional[str]:
+    async def download(self, url: str, *, proxy: Optional[str] = None) -> Optional[str]:
         """下载图片到本地文件，返回路径。支持 http(s) URL 和 data URI。"""
         if url.startswith("data:"):
             return self._save_data_uri(url)
         try:
-            async with self.session.get(url, proxy=self.proxy) as resp:
+            async with self.session.get(url, proxy=proxy if proxy is not None else self.proxy, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0 NekoDraw/1.0"}) as resp:
                 if resp.status != 200:
+                    logger.warning("生成图片下载失败 HTTP %s: %s", resp.status, str(url)[:240])
                     return None
                 raw = await resp.read()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            logger.warning("生成图片下载异常 %s: %s", type(exc).__name__, str(url)[:240])
             return None
-        mime = resp.headers.get("Content-Type", "image/png").split(";")[0]
-        if not mime.startswith("image/"):
+        declared = resp.headers.get("Content-Type", "").split(";")[0].lower()
+        detected = self._detect_image_mime(raw)
+        mime = declared if declared.startswith("image/") else detected
+        if not mime:
+            logger.warning("生成结果不是图片（Content-Type=%s，大小=%s）: %s", declared or "unknown", len(raw), str(url)[:240])
             return None
         path = self.save_dir / f"img_{uuid.uuid4().hex[:12]}{self._ext(mime)}"
         path.write_bytes(raw)
         return str(path)
+
+    async def materialize_image(self, url_or_path: str) -> Optional[str]:
+        """将消息中的图片引用落地为本地文件。
+
+        本地路径直接返回；file URI、data URI 和远程 URL 会被统一处理。
+        """
+        value = str(url_or_path or "").strip()
+        if not value:
+            return None
+        if value.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+            value = unquote(urlparse(value).path)
+            if os.name == "nt" and re.match(r"^/[A-Za-z]:", value):
+                value = value[1:]
+        if os.path.isfile(value):
+            return str(Path(value).resolve())
+        data_uri = await self.download_to_data_uri(value)
+        if not data_uri:
+            return None
+        return self._save_data_uri(data_uri)
 
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:

@@ -5,6 +5,8 @@
 模型模板、提供商、参考图数量、状态、错误信息、图片路径、耗时。
 支持按用户/模型/状态/时间范围筛选，分页查询。
 """
+from __future__ import annotations
+
 import json
 import sqlite3
 import threading
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS generations (
     status TEXT NOT NULL,
     error_message TEXT,
     image_paths TEXT,
+    source_image_paths TEXT,
     generation_time_ms REAL
 );
 CREATE INDEX IF NOT EXISTS idx_generations_timestamp ON generations(timestamp);
@@ -49,6 +52,9 @@ class HistoryStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(generations)")}
+            if "source_image_paths" not in columns:
+                conn.execute("ALTER TABLE generations ADD COLUMN source_image_paths TEXT")
 
     @contextmanager
     def _connect(self):
@@ -75,6 +81,7 @@ class HistoryStore:
         status: str = "success",
         error_message: str = "",
         image_paths: Optional[list[str]] = None,
+        source_image_paths: Optional[list[str]] = None,
         generation_time_ms: float = 0.0,
     ) -> int:
         """插入一条生成记录，返回记录 ID。"""
@@ -83,8 +90,8 @@ class HistoryStore:
                 """INSERT INTO generations
                    (timestamp, user_id, group_id, trigger_word, prompt, params,
                     model_template, provider, model, refer_image_count,
-                    status, error_message, image_paths, generation_time_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    status, error_message, image_paths, source_image_paths, generation_time_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.time(),
                     user_id,
@@ -99,6 +106,7 @@ class HistoryStore:
                     status,
                     error_message,
                     json.dumps(image_paths or [], ensure_ascii=False),
+                    json.dumps(source_image_paths or [], ensure_ascii=False),
                     generation_time_ms,
                 ),
             )
@@ -158,6 +166,7 @@ class HistoryStore:
             item = dict(row)
             item["params"] = json.loads(item.get("params") or "{}")
             item["image_paths"] = json.loads(item.get("image_paths") or "[]")
+            item["source_image_paths"] = json.loads(item.get("source_image_paths") or "[]")
             items.append(item)
 
         return {
@@ -178,19 +187,39 @@ class HistoryStore:
         item = dict(row)
         item["params"] = json.loads(item.get("params") or "{}")
         item["image_paths"] = json.loads(item.get("image_paths") or "[]")
+        item["source_image_paths"] = json.loads(item.get("source_image_paths") or "[]")
         return item
+
+    def _delete_source_files(self, paths: list[str]) -> None:
+        root = (self.data_dir / "history_inputs").resolve()
+        for value in paths:
+            try:
+                path = Path(value).resolve()
+                if path.is_relative_to(root) and path.name.startswith("source_"):
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
 
     def delete(self, record_id: int) -> bool:
         """删除一条记录（不删除图片文件）。"""
+        item = self.get(record_id)
         with self._lock, self._connect() as conn:
             cur = conn.execute("DELETE FROM generations WHERE id = ?", (record_id,))
-            return cur.rowcount > 0
+        if cur.rowcount and item:
+            self._delete_source_files(item.get("source_image_paths", []))
+        return cur.rowcount > 0
 
     def clear(self) -> int:
         """清空所有历史记录，返回删除条数。"""
         with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT source_image_paths FROM generations").fetchall()
             cur = conn.execute("DELETE FROM generations")
-            return cur.rowcount
+        for row in rows:
+            try:
+                self._delete_source_files(json.loads(row[0] or "[]"))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return cur.rowcount
 
     def stats(self) -> dict[str, Any]:
         """统计概览：总次数、成功数、失败数、各模型使用次数。"""

@@ -10,6 +10,10 @@ class RateLimiter:
         self.completed = {}
         self.pending = {}
 
+    def reconfigure(self, config):
+        """Apply new rules without losing completed or in-flight usage."""
+        self.config = config
+
     def rules(self):
         rules = []
         for item in self.config.get('rate_limit_rules', []) or []:

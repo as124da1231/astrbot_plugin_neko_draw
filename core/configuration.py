@@ -1,4 +1,4 @@
-"""Configuration validation at the WebUI boundary, without changing schema keys.
+"""WebUI 配置的类型、唯一性与引用完整性校验。
 
 旧配置继承策略：保存时尽量保持用户数据原貌——
 - 不在保存时写回 __template_key / provider，缺失标识由前端渲染层与运行时按模板兜底；
@@ -9,15 +9,6 @@
 """
 from copy import deepcopy
 import math
-
-
-MODEL_TEMPLATE_PROVIDERS = {
-    'seedream_text': 'wavespeed',
-    'seedream_edit': 'wavespeed',
-    'runninghub_text': 'runninghub',
-    'runninghub_edit': 'runninghub',
-    'openapi_text': 'openapi',
-}
 
 
 def _coerce(value, field, path, strict):
@@ -85,8 +76,6 @@ def validate_config(config, schema):
                 # 不会因缺标识而读取不到）。加载/启动阶段仍保持原样、不做此改写。
                 if templates and not item.get('__template_key'):
                     item['__template_key'] = next(iter(templates))
-                if path == 'model_templates' and item.get('__template_key') in MODEL_TEMPLATE_PROVIDERS:
-                    item['provider'] = MODEL_TEMPLATE_PROVIDERS[item['__template_key']]
                 template = templates.get(item.get('__template_key'), fallback)
                 for key, spec in template.get('items', {}).items():
                     if key in item:
@@ -109,17 +98,111 @@ def validate_config(config, schema):
             if isinstance(number, bool) or not isinstance(number, (int, float)) or number <= 0:
                 raise ValueError(f'{key} 必须大于 0')
 
+    minimum = int(result.get('apng_maker_min_frames', 2))
+    maximum = int(result.get('apng_maker_max_frames', 20))
+    if minimum < 1 or maximum < 1 or minimum > maximum:
+        raise ValueError('APNG 最低图片数必须至少为 1，且不能大于最大帧数')
+    if maximum > 100:
+        raise ValueError('APNG 最大帧数不能超过 100')
+    default_interval = float(result.get('apng_default_interval_seconds', 5))
+    if not 0.1 <= default_interval <= 60:
+        raise ValueError('APNG 默认间隔秒数必须为 0.1～60')
+
+    # v2 将提供商、模型和模型参数放在同一层。先校验权威结构，再投影给稳定运行时。
+    integrated = result.get('image_providers')
+    if isinstance(integrated, list):
+        integrated_names = []
+        integrated_models = []
+        for p_index, provider in enumerate(integrated):
+            if not isinstance(provider, dict):
+                raise ValueError(f'模型提供商[{p_index + 1}]格式无效')
+            name = str(provider.get('name', '')).strip()
+            if not name:
+                raise ValueError(f'模型提供商[{p_index + 1}]名称不能为空')
+            integrated_names.append(name)
+            source = str(provider.get('source', 'custom')).lower()
+            if source not in {'custom', 'astrbot'}:
+                raise ValueError(f'模型提供商「{name}」来源无效')
+            if source == 'astrbot' and not str(provider.get('astrbot_provider_id', '')).strip():
+                raise ValueError(f'模型提供商「{name}」必须选择 AstrBot 提供商')
+            if source == 'custom':
+                base_url = str(provider.get('base_url', '')).strip()
+                if not base_url.startswith(('http://', 'https://')):
+                    raise ValueError(f'模型提供商「{name}」的 API Base URL 无效')
+            local_names = []
+            for m_index, model in enumerate(provider.get('models', []) or []):
+                if not isinstance(model, dict):
+                    raise ValueError(f'模型提供商「{name}」的模型[{m_index + 1}]格式无效')
+                alias = str(model.get('name') or model.get('model') or '').strip()
+                model_id = str(model.get('model', '')).strip()
+                if not alias or not model_id:
+                    raise ValueError(f'模型提供商「{name}」的模型名称和模型 ID 不能为空')
+                local_names.append(alias)
+                integrated_models.append(alias)
+                if str(model.get('mode', 'text')).lower() not in {'text', 'edit'}:
+                    raise ValueError(f'模型「{alias}」的用途必须是文生图或图片编辑')
+            duplicate_local = sorted({n for n in local_names if local_names.count(n) > 1})
+            if duplicate_local:
+                raise ValueError(f'提供商「{name}」内模型名称重复：{"、".join(duplicate_local)}')
+        duplicate_integrated = sorted({n for n in integrated_names if integrated_names.count(n) > 1})
+        if duplicate_integrated:
+            raise ValueError(f'模型提供商名称必须唯一，重复项：{"、".join(duplicate_integrated)}')
+        duplicate_models_v2 = sorted({n for n in integrated_models if integrated_models.count(n) > 1})
+        if duplicate_models_v2:
+            raise ValueError(f'模型显示名称必须全局唯一，重复项：{"、".join(duplicate_models_v2)}')
+        for key, label in (('default_text_model_v2', '默认文生图模型'), ('default_edit_model_v2', '默认图片编辑模型')):
+            selected = str(result.get(key, '')).strip()
+            if selected and not selected.startswith('@astrbot:') and selected not in integrated_models:
+                raise ValueError(f'{label}「{selected}」不存在或未启用')
+        from .providers import sync_image_provider_config
+        sync_image_provider_config(result)
+
     # 这些字段在运行时会被转换为以名称为键的字典。若允许重复，后面的项会静默
     # 覆盖前面的项，面板看到的配置与真正生效的配置就会不一致，因此在落盘前拒绝。
+    provider_names = []
+    valid_provider_types = {'wavespeed', 'runninghub', 'openai', 'openapi', 'astrbot'}
+    for index, item in enumerate(result.get('model_providers', []) or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name', '')).strip()
+        provider_type = str(item.get('type', '')).strip().lower()
+        if not name:
+            raise ValueError(f'模型提供商[{index + 1}]名称不能为空')
+        if provider_type not in valid_provider_types:
+            raise ValueError(f'模型提供商「{name}」类型无效')
+        if provider_type == 'astrbot' and not str(item.get('astrbot_provider_id', '')).strip():
+            raise ValueError(f'模型提供商「{name}」必须选择 AstrBot 模型提供商')
+        if provider_type == 'astrbot' and str(item.get('astrbot_protocol', 'auto')).strip().lower() not in {
+            'auto', 'wavespeed', 'runninghub', 'openai', 'openapi'
+        }:
+            raise ValueError(f'模型提供商「{name}」的图像接口协议无效')
+        provider_names.append(name)
+    duplicate_providers = sorted({name for name in provider_names if provider_names.count(name) > 1})
+    if duplicate_providers:
+        raise ValueError(f'模型提供商名称必须唯一，重复项：{"、".join(duplicate_providers)}')
+
     model_names = []
     for item in result.get('model_templates', []) or []:
         if isinstance(item, dict):
             name = str(item.get('name', '')).strip()
             if name:
                 model_names.append(name)
+            provider = str(item.get('provider', '')).strip()
+            if not provider:
+                raise ValueError(f'模型模板「{name or "未命名"}」必须选择模型提供商')
+            if provider not in provider_names:
+                raise ValueError(f'模型模板「{name or "未命名"}」选择的提供商「{provider}」不存在')
     duplicate_models = sorted({name for name in model_names if model_names.count(name) > 1})
     if duplicate_models:
         raise ValueError(f'模型模板名称必须唯一，重复项：{"、".join(duplicate_models)}')
+
+    for key, label in (
+        ('default_text_model', '默认文生图模板'),
+        ('default_edit_model', '默认编辑模板'),
+    ):
+        selected = str(result.get(key, '')).strip()
+        if selected and selected not in model_names:
+            raise ValueError(f'{label}「{selected}」不存在')
 
     prompt_triggers = []
     for item in result.get('prompt', []) or []:

@@ -3,7 +3,7 @@
 {%- endmacro %}
 
 {% macro nav_button(page, label, icon_name, index) -%}
-<button class="nav-item{% if page == 'history' %} is-active{% endif %}" type="button" data-page="{{ page }}">
+<button class="nav-item{% if page == 'providers' %} is-active{% endif %}" type="button" data-page="{{ page }}">
   {{ icon(icon_name, 19) }}<span>{{ label }}</span><span class="nav-index">{{ index }}</span>
 </button>
 {%- endmacro %}

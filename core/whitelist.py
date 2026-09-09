@@ -67,7 +67,7 @@ class WhitelistGuard:
         kind = kind.strip()
         target = target.strip()
         if kind not in ("用户", "群组") or not target:
-            return False, "用法：/猫娘白名单添加 <用户|群组> <ID>"
+            return False, "用法：/nc wa <u|g> <ID>"
         if kind == "用户":
             self.users.add(target)
         else:
@@ -79,7 +79,7 @@ class WhitelistGuard:
         kind = kind.strip()
         target = target.strip()
         if kind not in ("用户", "群组") or not target:
-            return False, "用法：/猫娘白名单删除 <用户|群组> <ID>"
+            return False, "用法：/nc wd <u|g> <ID>"
         if kind == "用户":
             if target in self.users:
                 self.users.discard(target)

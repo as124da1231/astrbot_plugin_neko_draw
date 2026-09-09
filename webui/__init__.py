@@ -17,9 +17,13 @@ import json
 import time
 import asyncio
 from copy import deepcopy
+from astrbot.api import logger
 from ..core.uploads import store_upload
-from ..core.templates import derive_provider
 from ..core.configuration import validate_config
+from ..core.providers import (
+    fetch_provider_models, list_astrbot_providers, test_model_connection,
+    test_provider_connection,
+)
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -48,14 +52,18 @@ class WebUIBridge:
         context: Context,
         config: Any,
         history_store: Any,
+        apng_history_store: Any,
         data_dir: Path,
         plugin_dir: Path,
+        on_config_saved: Any = None,
     ):
         self.context = context
         self.config = config
         self.history = history_store
+        self.apng_history = apng_history_store
         self.data_dir = Path(data_dir)
         self.plugin_dir = Path(plugin_dir)
+        self.on_config_saved = on_config_saved
 
     # ------------------------------------------------------------------
     # 路由注册
@@ -65,12 +73,21 @@ class WebUIBridge:
             (f"/{PLUGIN_NAME}/config", self.api_get_config, ["GET"], "Get plugin config and schema"),
             (f"/{PLUGIN_NAME}/config", self.api_save_config, ["POST"], "Save plugin config"),
             (f"/{PLUGIN_NAME}/config/upload_file", self.api_upload_file, ["POST"], "Upload config file"),
+            (f"/{PLUGIN_NAME}/astrbot-providers", self.api_astrbot_providers, ["GET"], "List AstrBot providers"),
+            (f"/{PLUGIN_NAME}/providers/test", self.api_test_provider, ["POST"], "Test provider connection"),
+            (f"/{PLUGIN_NAME}/providers/models", self.api_provider_models, ["POST"], "Fetch provider models"),
+            (f"/{PLUGIN_NAME}/models/test", self.api_test_model, ["POST"], "Test image model"),
             (f"/{PLUGIN_NAME}/history", self.api_list_history, ["GET"], "List generation history"),
             (f"/{PLUGIN_NAME}/history/stats", self.api_history_stats, ["GET"], "History statistics"),
             (f"/{PLUGIN_NAME}/history/clear", self.api_clear_history, ["POST"], "Clear all history"),
             (f"/{PLUGIN_NAME}/history/<record_id>", self.api_get_history, ["GET"], "Get history detail"),
             (f"/{PLUGIN_NAME}/history/delete", self.api_delete_history, ["POST"], "Delete history record"),
             (f"/{PLUGIN_NAME}/history/image/<record_id>/<idx>", self.api_history_image, ["GET"], "Serve history image"),
+            (f"/{PLUGIN_NAME}/history/source/<record_id>/<idx>", self.api_history_source, ["GET"], "Serve edit source image"),
+            (f"/{PLUGIN_NAME}/apng-history", self.api_list_apng_history, ["GET"], "List APNG creations"),
+            (f"/{PLUGIN_NAME}/apng-history/delete", self.api_delete_apng_history, ["POST"], "Delete APNG creation"),
+            (f"/{PLUGIN_NAME}/apng-history/clear", self.api_clear_apng_history, ["POST"], "Clear APNG creations"),
+            (f"/{PLUGIN_NAME}/apng-history/image/<record_id>", self.api_apng_history_image, ["GET"], "Serve APNG file"),
         ]
         for path, handler, methods, desc in routes:
             try:
@@ -117,13 +134,22 @@ class WebUIBridge:
             for k, v in new_config.items():
                 self.config[k] = v
 
-            if hasattr(self.config, "save_config"):
-                try:
+            persisted = False
+            try:
+                if hasattr(self.config, "save_config"):
                     self.config.save_config()
-                except Exception:
-                    self.config.clear()
-                    self.config.update(old)
-                    raise
+                    persisted = True
+                if callable(self.on_config_saved):
+                    await self.on_config_saved()
+            except Exception:
+                self.config.clear()
+                self.config.update(old)
+                if persisted and hasattr(self.config, "save_config"):
+                    try:
+                        self.config.save_config()
+                    except Exception as rollback_error:
+                        logger.error(f"[neko_draw] 配置回滚写入失败: {rollback_error}")
+                raise
 
             return json_response({
                 "status": "ok",
@@ -154,6 +180,65 @@ class WebUIBridge:
             return error_response(str(e), status_code=400)
         except Exception as e:
             return error_response(str(e), status_code=500)
+
+    async def api_astrbot_providers(self) -> Any:
+        """只返回提供商标识与模型信息，不把 AstrBot 密钥发送到浏览器。"""
+        try:
+            return json_response({
+                "status": "ok",
+                "data": {"items": list_astrbot_providers(self.context)},
+            })
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def api_test_provider(self) -> Any:
+        """测试草稿提供商配置；不提交任何生图任务。"""
+        try:
+            body = await request.json() if hasattr(request, "json") else {}
+            item = body.get("provider") if isinstance(body, dict) else None
+            if not isinstance(item, dict):
+                return error_response("缺少有效的模型提供商配置", status_code=400)
+            message = await test_provider_connection(item, self.context)
+            return json_response({
+                "status": "ok",
+                "data": {"message": message},
+            })
+        except (ValueError, asyncio.TimeoutError) as e:
+            message = "连接测试超时" if isinstance(e, asyncio.TimeoutError) else str(e)
+            return error_response(message, status_code=400)
+        except Exception as e:
+            return error_response(f"连接测试失败：{type(e).__name__}", status_code=502)
+
+    async def api_provider_models(self) -> Any:
+        """测试连接并返回该连接公开的模型列表。"""
+        try:
+            body = await request.json() if hasattr(request, "json") else {}
+            item = body.get("provider") if isinstance(body, dict) else None
+            if not isinstance(item, dict):
+                return error_response("缺少有效的模型提供商配置", status_code=400)
+            models = await fetch_provider_models(item, self.context)
+            return json_response({"status": "ok", "data": {
+                "message": f"连接成功，发现 {len(models)} 个模型",
+                "models": models,
+            }})
+        except (ValueError, asyncio.TimeoutError) as e:
+            return error_response("连接测试超时" if isinstance(e, asyncio.TimeoutError) else str(e), status_code=400)
+        except Exception as e:
+            return error_response(f"获取模型列表失败：{type(e).__name__}", status_code=502)
+
+    async def api_test_model(self) -> Any:
+        try:
+            body = await request.json() if hasattr(request, "json") else {}
+            provider = body.get("provider") if isinstance(body, dict) else None
+            model = body.get("model") if isinstance(body, dict) else None
+            if not isinstance(provider, dict) or not isinstance(model, dict):
+                return error_response("缺少有效的提供商或模型配置", status_code=400)
+            message = await test_model_connection(provider, model, self.context)
+            return json_response({"status": "ok", "data": {"message": message}})
+        except (ValueError, asyncio.TimeoutError) as e:
+            return error_response("模型测试超时" if isinstance(e, asyncio.TimeoutError) else str(e), status_code=400)
+        except Exception as e:
+            return error_response(f"模型测试失败：{type(e).__name__}", status_code=502)
 
     # ------------------------------------------------------------------
     # 历史
@@ -251,5 +336,62 @@ class WebUIBridge:
                 "status": "ok",
                 "data": {"mime": mime, "data_url": f"data:{mime};base64,{b64}"},
             })
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def _stored_image(self, path: Path) -> Any:
+        if not path.is_file():
+            return error_response("图片文件不存在", status_code=404)
+        raw = await asyncio.to_thread(path.read_bytes)
+        mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+                ".gif": "image/gif"}.get(path.suffix.lower(), "image/png")
+        b64 = base64.b64encode(raw).decode("ascii")
+        return json_response({"status": "ok", "data": {
+            "mime": mime, "data_url": f"data:{mime};base64,{b64}"}})
+
+    async def api_history_source(self, record_id: str, idx: str) -> Any:
+        try:
+            item = self.history.get(int(record_id))
+            if item is None:
+                return error_response("记录不存在", status_code=404)
+            paths = item.get("source_image_paths", [])
+            index = int(idx)
+            if index < 0 or index >= len(paths):
+                return error_response("原图索引越界", status_code=404)
+            return await self._stored_image(Path(paths[index]))
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def api_list_apng_history(self) -> Any:
+        try:
+            args = dict(request.query) if hasattr(request, "query") and request.query else {}
+            result = self.apng_history.list(args.get("page", 1), args.get("page_size", 20))
+            return json_response({"status": "ok", "data": result})
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def api_delete_apng_history(self) -> Any:
+        try:
+            body = await request.json() if hasattr(request, "json") else {}
+            if not isinstance(body, dict) or body.get("id") is None:
+                return error_response("缺少 id", status_code=400)
+            if not self.apng_history.delete(int(body["id"])):
+                return error_response("记录不存在", status_code=404)
+            return json_response({"status": "ok", "data": {"deleted": True}})
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def api_clear_apng_history(self) -> Any:
+        try:
+            return json_response({"status": "ok", "data": {"deleted": self.apng_history.clear()}})
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def api_apng_history_image(self, record_id: str) -> Any:
+        try:
+            item = self.apng_history.get(int(record_id))
+            if item is None:
+                return error_response("记录不存在", status_code=404)
+            return await self._stored_image(Path(item["file_path"]))
         except Exception as e:
             return error_response(str(e), status_code=500)
