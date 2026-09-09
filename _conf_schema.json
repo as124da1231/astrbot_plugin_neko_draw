@@ -1,0 +1,775 @@
+{
+  "api_key": {
+    "type": "string",
+    "description": "WaveSpeed API Key",
+    "hint": "在 https://wavespeed.ai 后台获取，格式如 wsk_live_xxx",
+    "default": "",
+    "secret": true
+  },
+  "base_url": {
+    "type": "string",
+    "description": "WaveSpeed API Base URL",
+    "default": "https://api.wavespeed.ai/api/v3"
+  },
+  "runninghub_api_key": {
+    "type": "string",
+    "description": "RunningHub API Key",
+    "hint": "在 https://www.runninghub.cn 后台获取，32位密钥。使用 RunningHub 模型时必填",
+    "default": "",
+    "secret": true
+  },
+  "runninghub_base_url": {
+    "type": "string",
+    "description": "RunningHub API Base URL",
+    "default": "https://www.runninghub.cn/openapi/v2"
+  },
+  "openapi_api_key": {
+    "type": "string",
+    "description": "OpenAI 兼容 API Key",
+    "hint": "适用于所有 OpenAI 兼容格式的图像 API（OpenAI / SiliconFlow / 各类中转）。使用 openapi 提供商时必填",
+    "default": "",
+    "secret": true
+  },
+  "openapi_base_url": {
+    "type": "string",
+    "description": "OpenAI 兼容 API Base URL",
+    "hint": "如 https://api.openai.com/v1、https://api.siliconflow.cn/v1 等",
+    "default": "https://api.openai.com/v1"
+  },
+  "default_text_model": {
+    "type": "string",
+    "description": "默认文生图模板名",
+    "hint": "填写 model_templates 中某个模板的 name。无图消息使用",
+    "default": "seedream_v5_pro"
+  },
+  "default_edit_model": {
+    "type": "string",
+    "description": "默认编辑（图生图）模板名",
+    "hint": "填写 model_templates 中某个模板的 name。带图消息使用；--model edit 也指向它",
+    "default": "seedream_v5_pro_edit"
+  },
+  "model_templates": {
+    "type": "template_list",
+    "description": "模型模板",
+    "hint": "模板类型决定使用 WaveSpeed、RunningHub 或 OpenAI 对应的 API URL 与 Key。可自行设置唯一模板名、模型名、提交参数和参考图字段；提示词中的 --参数会覆盖模板同名参数，也可透传新参数",
+    "default": [
+      {
+        "__template_key": "seedream_text",
+        "name": "seedream_v5_pro",
+        "provider": "wavespeed",
+        "model": "bytedance/seedream-v5.0-pro",
+        "enabled": true,
+        "enabled_as_default": true,
+        "fallback_order": 0,
+        "refer_field": "",
+        "max_refer_images": 10,
+        "min_prompt_length": 0,
+        "params": {
+          "aspect_ratio": "1:1",
+          "resolution": "1k",
+          "output_format": "jpeg",
+          "prompt_optimization_mode": "fast"
+        }
+      },
+      {
+        "__template_key": "seedream_edit",
+        "name": "seedream_v5_pro_edit",
+        "provider": "wavespeed",
+        "model": "bytedance/seedream-v5.0-pro/edit",
+        "enabled": true,
+        "enabled_as_default": true,
+        "fallback_order": 1,
+        "refer_field": "images",
+        "max_refer_images": 10,
+        "min_prompt_length": 0,
+        "params": {
+          "resolution": "1k",
+          "output_format": "jpeg",
+          "prompt_optimization_mode": "fast"
+        }
+      },
+      {
+        "__template_key": "runninghub_text",
+        "name": "rh_seedream_lite",
+        "provider": "runninghub",
+        "model": "seedream-v5-lite/text-to-image",
+        "enabled": true,
+        "enabled_as_default": false,
+        "fallback_order": 10,
+        "refer_field": "",
+        "max_refer_images": 0,
+        "min_prompt_length": 5,
+        "params": {
+          "width": 2048,
+          "height": 2048,
+          "maxImages": 1,
+          "sequentialImageGeneration": "disabled"
+        }
+      },
+      {
+        "__template_key": "runninghub_edit",
+        "name": "rh_dola_seedream_edit",
+        "provider": "runninghub",
+        "model": "dola-Seedream-5.0-pro/image-to-image",
+        "enabled": true,
+        "enabled_as_default": false,
+        "fallback_order": 11,
+        "refer_field": "imageUrls",
+        "max_refer_images": 10,
+        "min_prompt_length": 5,
+        "params": {
+          "resolution": "2k",
+          "outputFormat": "jpeg"
+        }
+      },
+      {
+        "__template_key": "openapi_text",
+        "name": "openapi_generic",
+        "provider": "openapi",
+        "model": "gpt-image-2",
+        "enabled": true,
+        "enabled_as_default": false,
+        "fallback_order": 20,
+        "refer_field": "",
+        "max_refer_images": 0,
+        "min_prompt_length": 0,
+        "params": {
+          "_endpoint": "images/generations",
+          "size": "1024x1024",
+          "n": 1
+        }
+      }
+    ],
+    "templates": {
+      "seedream_text": {
+        "name": "WaveSpeed 文生图",
+        "items": {
+          "name": {
+            "type": "str",
+            "default": "seedream_v5_pro",
+            "description": "模板名称",
+            "hint": "--model 参数引用，必须唯一"
+          },
+          "provider": {
+            "type": "str",
+            "default": "wavespeed",
+            "description": "API 提供商",
+            "hint": "wavespeed 或 runninghub"
+          },
+          "model": {
+            "type": "str",
+            "default": "bytedance/seedream-v5.0-pro",
+            "description": "模型名",
+            "hint": "直接拼在 URL 中：POST {base_url}/{model}"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用模板"
+          },
+          "enabled_as_default": {
+            "type": "bool",
+            "default": true,
+            "description": "允许作为默认模型"
+          },
+          "fallback_order": {
+            "type": "int",
+            "default": 0,
+            "description": "默认优先级",
+            "hint": "数字越小越优先（当前通过 default_text_model/default_edit_model 指定默认，此字段保留备用）"
+          },
+          "refer_field": {
+            "type": "str",
+            "default": "",
+            "description": "参考图字段名",
+            "hint": "图生图模型填 images（或该模型实际字段名）；文生图留空。留空时消息携带的图片会被忽略"
+          },
+          "max_refer_images": {
+            "type": "int",
+            "default": 10,
+            "description": "参考图数量上限"
+          },
+          "min_prompt_length": {
+            "type": "int",
+            "default": 0,
+            "description": "提示词最小长度",
+            "hint": "0 表示不限制。RunningHub 模型要求至少 5 个字符"
+          },
+          "params": {
+            "type": "object",
+            "description": "提交参数（可自由增删键值）",
+            "hint": "这些键值会原样写入请求体。提示词中的 --参数 同名覆盖、新键透传。可在代码编辑模式下自由扩展字段",
+            "items": {
+              "aspect_ratio": {
+                "type": "string",
+                "default": "1:1",
+                "description": "输出比例（如 1:1、16:9）"
+              },
+              "resolution": {
+                "type": "string",
+                "default": "1k",
+                "description": "分辨率（1k/1.5k/2k）"
+              },
+              "output_format": {
+                "type": "string",
+                "default": "jpeg"
+              },
+              "prompt_optimization_mode": {
+                "type": "string",
+                "default": "fast"
+              }
+            }
+          }
+        }
+      },
+      "seedream_edit": {
+        "name": "WaveSpeed 图片编辑",
+        "items": {
+          "name": {
+            "type": "str",
+            "default": "seedream_v5_pro_edit",
+            "description": "模板名称",
+            "hint": "--model 参数引用，必须唯一"
+          },
+          "provider": {
+            "type": "str",
+            "default": "wavespeed",
+            "description": "API 提供商",
+            "hint": "wavespeed 或 runninghub"
+          },
+          "model": {
+            "type": "str",
+            "default": "bytedance/seedream-v5.0-pro/edit",
+            "description": "模型名",
+            "hint": "直接拼在 URL 中：POST {base_url}/{model}"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用模板"
+          },
+          "enabled_as_default": {
+            "type": "bool",
+            "default": true,
+            "description": "允许作为默认模型"
+          },
+          "fallback_order": {
+            "type": "int",
+            "default": 1,
+            "description": "默认优先级"
+          },
+          "refer_field": {
+            "type": "str",
+            "default": "images",
+            "description": "参考图字段名",
+            "hint": "图生图模型填 images（或该模型实际字段名）；文生图留空"
+          },
+          "max_refer_images": {
+            "type": "int",
+            "default": 10,
+            "description": "参考图数量上限"
+          },
+          "min_prompt_length": {
+            "type": "int",
+            "default": 0,
+            "description": "提示词最小长度",
+            "hint": "0 表示不限制。RunningHub 模型要求至少 5 个字符"
+          },
+          "params": {
+            "type": "object",
+            "description": "提交参数（可自由增删键值）",
+            "items": {
+              "resolution": {
+                "type": "string",
+                "default": "1k",
+                "description": "分辨率（1k/1.5k/2k）"
+              },
+              "output_format": {
+                "type": "string",
+                "default": "jpeg"
+              },
+              "prompt_optimization_mode": {
+                "type": "string",
+                "default": "fast"
+              }
+            }
+          }
+        }
+      },
+      "runninghub_text": {
+        "name": "RunningHub 文生图",
+        "items": {
+          "name": {
+            "type": "str",
+            "default": "rh_seedream_lite",
+            "description": "模板名称",
+            "hint": "--model 参数引用，必须唯一"
+          },
+          "provider": {
+            "type": "str",
+            "default": "runninghub",
+            "description": "API 提供商",
+            "hint": "wavespeed 或 runninghub"
+          },
+          "model": {
+            "type": "str",
+            "default": "seedream-v5-lite/text-to-image",
+            "description": "RunningHub 模型名",
+            "hint": "直接拼在 URL 中：POST {runninghub_base_url}/{model}"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用模板"
+          },
+          "enabled_as_default": {
+            "type": "bool",
+            "default": false,
+            "description": "允许作为默认模型"
+          },
+          "fallback_order": {
+            "type": "int",
+            "default": 10,
+            "description": "默认优先级"
+          },
+          "refer_field": {
+            "type": "str",
+            "default": "",
+            "description": "参考图字段名",
+            "hint": "文生图留空"
+          },
+          "max_refer_images": {
+            "type": "int",
+            "default": 0,
+            "description": "参考图数量上限"
+          },
+          "min_prompt_length": {
+            "type": "int",
+            "default": 5,
+            "description": "提示词最小长度",
+            "hint": "RunningHub 文生图要求 5-2000 字符"
+          },
+          "params": {
+            "type": "object",
+            "description": "提交参数（可自由增删键值）",
+            "items": {
+              "width": {
+                "type": "int",
+                "default": 2048,
+                "description": "输出宽度（像素）"
+              },
+              "height": {
+                "type": "int",
+                "default": 2048,
+                "description": "输出高度（像素）"
+              },
+              "maxImages": {
+                "type": "int",
+                "default": 1,
+                "description": "生成图片数量（1-15）"
+              },
+              "sequentialImageGeneration": {
+                "type": "string",
+                "default": "disabled",
+                "description": "连贯组图（disabled/auto）"
+              }
+            }
+          }
+        }
+      },
+      "runninghub_edit": {
+        "name": "RunningHub 图片编辑",
+        "items": {
+          "name": {
+            "type": "str",
+            "default": "rh_dola_seedream_edit",
+            "description": "模板名称",
+            "hint": "--model 参数引用，必须唯一"
+          },
+          "provider": {
+            "type": "str",
+            "default": "runninghub",
+            "description": "API 提供商",
+            "hint": "wavespeed 或 runninghub"
+          },
+          "model": {
+            "type": "str",
+            "default": "dola-Seedream-5.0-pro/image-to-image",
+            "description": "RunningHub 模型名",
+            "hint": "直接拼在 URL 中：POST {runninghub_base_url}/{model}"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用模板"
+          },
+          "enabled_as_default": {
+            "type": "bool",
+            "default": false,
+            "description": "允许作为默认模型"
+          },
+          "fallback_order": {
+            "type": "int",
+            "default": 11,
+            "description": "默认优先级"
+          },
+          "refer_field": {
+            "type": "str",
+            "default": "imageUrls",
+            "description": "参考图字段名",
+            "hint": "RunningHub 图生图用 imageUrls"
+          },
+          "max_refer_images": {
+            "type": "int",
+            "default": 10,
+            "description": "参考图数量上限（最多10）"
+          },
+          "min_prompt_length": {
+            "type": "int",
+            "default": 5,
+            "description": "提示词最小长度",
+            "hint": "具体长度限制以当前模型接口文档为准"
+          },
+          "params": {
+            "type": "object",
+            "description": "提交参数（可自由增删键值）",
+            "items": {
+              "resolution": {
+                "type": "string",
+                "default": "2k",
+                "description": "分辨率（1k/2k，优先于width/height）"
+              },
+              "outputFormat": {
+                "type": "string",
+                "default": "jpeg",
+                "description": "输出格式（jpeg/png）"
+              }
+            }
+          }
+        }
+      },
+      "openapi_text": {
+        "name": "OpenAI",
+        "items": {
+          "name": {
+            "type": "str",
+            "default": "openapi_generic",
+            "description": "模板名称",
+            "hint": "--model 参数引用，必须唯一"
+          },
+          "provider": {
+            "type": "str",
+            "default": "openapi",
+            "description": "API 提供商",
+            "hint": "wavespeed / runninghub / openapi"
+          },
+          "model": {
+            "type": "str",
+            "default": "gpt-image-2",
+            "description": "模型名",
+            "hint": "放入请求体的 model 字段（不拼 URL）"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用模板"
+          },
+          "enabled_as_default": {
+            "type": "bool",
+            "default": false,
+            "description": "允许作为默认模型"
+          },
+          "fallback_order": {
+            "type": "int",
+            "default": 20,
+            "description": "默认优先级"
+          },
+          "refer_field": {
+            "type": "str",
+            "default": "",
+            "description": "参考图字段名",
+            "hint": "OpenAI 文生图留空"
+          },
+          "max_refer_images": {
+            "type": "int",
+            "default": 0,
+            "description": "参考图数量上限"
+          },
+          "min_prompt_length": {
+            "type": "int",
+            "default": 0,
+            "description": "提示词最小长度",
+            "hint": "0 表示不限制"
+          },
+          "params": {
+            "type": "object",
+            "description": "提交参数（可自由增删键值）",
+            "hint": "_endpoint 为请求路径（默认 images/generations）；其余参数原样写入请求体",
+            "items": {
+              "_endpoint": {
+                "type": "string",
+                "default": "images/generations",
+                "description": "API 端点路径"
+              },
+              "size": {
+                "type": "string",
+                "default": "1024x1024",
+                "description": "图片尺寸"
+              },
+              "n": {
+                "type": "int",
+                "default": 1,
+                "description": "生成数量"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "prompt": {
+    "type": "template_list",
+    "description": "预设提示词",
+    "hint": "每项左边填触发词，右边填提示词模板。{{user_text}} 会被消息文本替换。猫娘画图=文生图，猫娘改图=编辑模式（--model edit 指向默认编辑模板）",
+    "default": [
+      {
+        "__template_key": "prompt_item",
+        "trigger": "猫娘画图",
+        "prompt": "{{user_text}}"
+      },
+      {
+        "__template_key": "prompt_item",
+        "trigger": "猫娘改图",
+        "prompt": "{{user_text}} --model edit"
+      }
+    ],
+    "templates": {
+      "prompt_item": {
+        "name": "预设提示词",
+        "items": {
+          "trigger": {
+            "type": "str",
+            "default": "",
+            "description": "触发词",
+            "hint": "消息以该词开头时触发此预设（如 猫娘画图、猫娘改图）"
+          },
+          "prompt": {
+            "type": "str",
+            "default": "{{user_text}}",
+            "description": "提示词模板",
+            "hint": "{{user_text}} 会被用户消息文本替换；可附带 --参数 值，如 {{user_text}} --model edit"
+          },
+          "reference_image": {
+            "type": "file",
+            "default": [],
+            "file_types": ["jpg", "jpeg", "png", "webp", "gif", "bmp"],
+            "description": "风格参考图",
+            "hint": "点击上传此预设的风格参考图。触发此预设时会自动作为参考图传给绘图 API。可上传多张，取最后上传的一张。命令行 /猫娘添加 的预设无此字段，需在 WebUI 配置"
+          },
+          "reference_image_position": {
+            "type": "string",
+            "default": "before",
+            "options": ["before", "after"],
+            "description": "参考图位置",
+            "hint": "此预设的参考图与用户上传图片的排列顺序。before=预设参考图在前（风格优先），after=用户上传图在前（用户图优先）"
+          }
+        }
+      }
+    }
+  },
+  "enable_drawing_message": {
+    "type": "bool",
+    "description": "开始生成时发送提示",
+    "default": true
+  },
+  "drawing_message": {
+    "type": "string",
+    "description": "开始画图提示文案",
+    "hint": "留空则不发送",
+    "default": "🐱 猫娘正在画图，请稍候..."
+  },
+  "enable_apng_wrap": {
+    "type": "bool",
+    "description": "APNG 动图包装",
+    "hint": "开启后生成的图片会被包装成两帧 APNG 动图：第一帧快速闪过（可配置），第二帧为生成的图片。处理链：生成图→APNG→外显金句→合并转发",
+    "default": false
+  },
+  "apng_first_frame_path": {
+    "type": "file",
+    "description": "APNG 第一帧图片",
+    "hint": "点击上传第一帧（快速闪过的帧）图片。支持 jpg/jpeg/png/webp/gif/bmp。可上传多张，取最后上传的一张使用。未上传时使用插件内置默认图。上传后文件保存在插件数据目录",
+    "default": [],
+    "file_types": ["jpg", "jpeg", "png", "webp", "gif", "bmp"]
+  },
+  "apng_first_frame_duration": {
+    "type": "int",
+    "description": "APNG 第一帧显示时长（毫秒）",
+    "hint": "第一帧停留时间，越小闪得越快。示例 100ms 几乎是一闪而过",
+    "default": 100
+  },
+  "apng_second_frame_duration": {
+    "type": "int",
+    "description": "APNG 第二帧显示时长（毫秒）",
+    "hint": "第二帧（生成的图片）停留时间。示例 20000ms = 20秒",
+    "default": 20000
+  },
+  "apng_loop": {
+    "type": "int",
+    "description": "APNG 循环次数",
+    "hint": "0 = 无限循环；1 = 只播放一次；N = 播放 N 次",
+    "default": 0
+  },
+  "apng_optimize": {
+    "type": "bool",
+    "description": "APNG 压缩优化",
+    "hint": "开启后对 APNG 进行压缩优化，减小文件体积",
+    "default": true
+  },
+  "enable_image_summary": {
+    "type": "bool",
+    "description": "图片外显金句",
+    "hint": "开启后单张图片在 QQ 群列表中不再显示「[图片]」，而是随机显示一句金句（仅 aiocqhttp 平台可用，多图时自动回退普通图片）",
+    "default": false
+  },
+  "image_summary_quotes": {
+    "type": "list",
+    "description": "外显金句列表",
+    "hint": "随机抽取一句用于图片外显。可按需自行补充",
+    "default": [
+      "你已被移出群聊",
+      "[群主女装图]",
+      "哎呦，你干嘛~",
+      "Ciallo～(∠・ω< )⌒☆"
+    ]
+  },
+  "image_summary_quotes_files": {
+    "type": "list",
+    "description": "金句文件路径",
+    "hint": "可在 JSON 文件中维护金句（数组格式）。支持相对路径与绝对路径，多个路径会与默认金句合并后随机抽取",
+    "default": []
+  },
+  "enable_forward_message": {
+    "type": "bool",
+    "description": "合并转发（聊天记录）形式发送图片",
+    "hint": "开启后生成的图片会打包成 QQ 合并转发消息卡片发出。与图片外显独立，都开启时合并转发优先（仅 aiocqhttp 平台支持）",
+    "default": false
+  },
+  "forward_node_name": {
+    "type": "string",
+    "description": "合并转发节点昵称",
+    "hint": "合并转发卡片中显示的发送者昵称",
+    "default": "猫娘画图"
+  },
+  "enable_at_sender": {
+    "type": "bool",
+    "description": "发送图片时 @ 触发者",
+    "hint": "开启后群聊中发送图片时会在消息前 @ 触发绘图的用户，方便多人同时出图时区分归属。私聊自动忽略",
+    "default": false
+  },
+  "enable_rate_limit": {
+    "type": "bool",
+    "description": "启用单用户限流",
+    "hint": "开启后对单用户的绘图触发频率进行限制。可配置多个规则同时生效，任一规则超限即触发限流。限流白名单用户不受限制",
+    "default": false
+  },
+  "rate_limit_rules": {
+    "type": "template_list",
+    "description": "限流规则",
+    "hint": "可添加多个限流规则，同时生效。每个规则独立检查，任一规则超限即触发限流。默认两个规则：300秒内3次（短期防刷屏）+ 每日10次（长期限额）",
+    "default": [
+      {
+        "__template_key": "rate_limit_rule",
+        "window_seconds": 300,
+        "max_count": 3
+      },
+      {
+        "__template_key": "rate_limit_rule",
+        "window_seconds": 86400,
+        "max_count": 10
+      }
+    ],
+    "templates": {
+      "rate_limit_rule": {
+        "name": "限流规则",
+        "items": {
+          "window_seconds": {
+            "type": "int",
+            "default": 300,
+            "description": "时间窗口（秒）",
+            "hint": "在此时间窗口内最多使用 max_count 次。常用值：60=1分钟、300=5分钟、3600=1小时、86400=1天"
+          },
+          "max_count": {
+            "type": "int",
+            "default": 3,
+            "description": "最大次数",
+            "hint": "时间窗口内最多触发绘图的次数（按触发消息计数，不按生成图片张数）"
+          }
+        }
+      }
+    }
+  },
+  "rate_limit_whitelist": {
+    "type": "list",
+    "description": "限流白名单",
+    "hint": "在此列表中的用户不受限流限制。填写用户QQ号或用户ID",
+    "default": []
+  },
+  "rate_limit_message": {
+    "type": "string",
+    "description": "限流提示文案",
+    "hint": "超过限流时 @ 用户发送的提示文案。支持占位符：{window}=时间窗口描述、{max_count}=最大次数、{retry_after}=还需等待秒数",
+    "default": "🐱 绘图频率过高，{window}内最多{max_count}次，请{retry_after}秒后再试"
+  },
+  "whitelist_enabled": {
+    "type": "bool",
+    "description": "启用白名单",
+    "default": false,
+    "hint": "开启后仅白名单用户/群组可使用绘图"
+  },
+  "group_whitelist": {
+    "type": "list",
+    "description": "群组白名单",
+    "hint": "群号列表",
+    "default": []
+  },
+  "user_whitelist": {
+    "type": "list",
+    "description": "用户白名单",
+    "hint": "用户ID列表",
+    "default": []
+  },
+  "proxy": {
+    "type": "string",
+    "description": "代理地址",
+    "hint": "如 http://127.0.0.1:7890，留空不使用代理",
+    "default": ""
+  },
+  "poll_interval": {
+    "type": "int",
+    "description": "轮询间隔（秒）",
+    "default": 2
+  },
+  "max_concurrency": {
+    "type": "int",
+    "description": "最大并发任务数",
+    "hint": "WaveSpeed 免费/标准套餐一般允许同时运行 2 个预测任务。超出时插件自动排队等待，而不是直接报错。升级套餐后可调大",
+    "default": 2
+  },
+  "max_429_retries": {
+    "type": "int",
+    "description": "429 并发限制最大重试次数",
+    "hint": "即使有并发排队，若其他客户端也在占用额度，提交仍可能返回 429。此参数控制提交遇到 429 时的重试次数（指数退避）",
+    "default": 5
+  },
+  "retry_429_delay": {
+    "type": "int",
+    "description": "429 重试初始等待（秒）",
+    "hint": "每次重试等待时间按 2 的幂递增：2s、4s、8s...",
+    "default": 2
+  },
+  "timeout": {
+    "type": "int",
+    "description": "任务超时（秒）",
+    "default": 300
+  }
+}

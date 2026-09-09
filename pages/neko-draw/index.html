@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="atelier">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>猫娘画图 控制台</title>
+  <link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3 1.3 4.2L17.5 9l-4.2 1.8L12 15l-1.3-4.2L6.5 9l4.2-1.8L12 3Z"/><path d="m19 14 .8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14ZM5 14l.6 1.4L7 16l-1.4.6L5 18l-.6-1.4L3 16l1.4-.6L5 14Z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18h1.5a1.5 1.5 0 0 0 0-3H12a2 2 0 0 1 0-4h2a7 7 0 0 0 7-7c0-2.2-4-4-9-4Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="10" cy="6.5" r="1"/><circle cx="15" cy="7" r="1"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8m2 7a7 7 0 0 0 11.8 2.8L20 16"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M4 4h13l3 3v13H4V4Z"/><path d="M8 4v6h8V4M8 20v-6h8v6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v5h14v-5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12m0 0 5-5m-5 5-5-5M5 20h14"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark">N<span>·</span></div><div><strong>Neko Draw</strong><small>APNG IMAGE LAB</small></div></div>
+      <p class="nav-caption">工作空间</p>
+      <nav aria-label="主导航">
+        <button class="nav-item is-active" type="button" data-page="history">
+  <svg class="icon icon-history" width="19" height="19" aria-hidden="true"><use href="#i-history"></use></svg><span>生成历史</span><span class="nav-index">01</span>
+</button>
+        <button class="nav-item" type="button" data-page="config">
+  <svg class="icon icon-settings" width="19" height="19" aria-hidden="true"><use href="#i-settings"></use></svg><span>插件配置</span><span class="nav-index">02</span>
+</button>
+      </nav>
+      <div class="sidebar-note"><span class="live-dot"></span><div><strong>猫娘画图</strong><small>已连接 · v1.0.0</small></div></div>
+    </aside>
+
+    <main class="main-stage">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="mobile-menu" aria-label="打开菜单"><svg class="icon icon-menu" width="20" height="20" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+        <div class="breadcrumbs"><span>工作空间</span><b>/</b><strong id="crumb">生成历史</strong></div>
+        <div class="top-actions">
+          <span class="bridge-state" id="bridge-state"><i></i><span>正在连接</span></span>
+          <div class="theme-picker">
+            <button class="theme-trigger" id="theme-trigger" type="button" aria-haspopup="listbox" aria-expanded="false"><svg class="icon icon-palette" width="18" height="18" aria-hidden="true"><use href="#i-palette"></use></svg><span id="theme-label">奶油画室</span><svg class="icon icon-chevron" width="15" height="15" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+            <div class="theme-menu" id="theme-menu" role="listbox">
+<button class="theme-option" type="button" role="option" data-theme-value="atelier">
+  <span class="theme-swatch" style="--swatch: #f4b83f"></span>
+  <span>奶油画室</span><svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="#i-check"></use></svg>
+</button><button class="theme-option" type="button" role="option" data-theme-value="midnight">
+  <span class="theme-swatch" style="--swatch: #8b7cff"></span>
+  <span>午夜霓虹</span><svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="#i-check"></use></svg>
+</button><button class="theme-option" type="button" role="option" data-theme-value="forest">
+  <span class="theme-swatch" style="--swatch: #63b995"></span>
+  <span>森林实验室</span><svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="#i-check"></use></svg>
+</button>            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="page is-active" id="page-history" data-title="生成历史">
+          <div class="hero"><div><span class="eyebrow">IMAGE LAB / HISTORY</span><h1>让每一次创作，<em>都有迹可循。</em></h1><p>回看作品、追踪状态，清晰掌握每一次生成任务。</p></div><div class="hero-number">01</div></div>
+          <div class="stat-grid" id="stats">
+            <article class="stat-card"><span>总生成次数</span><strong data-stat="total">—</strong><small>ALL CREATIONS</small></article>
+            <article class="stat-card success"><span>成功生成</span><strong data-stat="success">—</strong><small>COMPLETED</small></article>
+            <article class="stat-card failed"><span>失败任务</span><strong data-stat="failed">—</strong><small>NEEDS ATTENTION</small></article>
+            <article class="stat-card accent"><span>成功率</span><strong data-stat="rate">—</strong><small>SUCCESS RATE</small></article>
+          </div>
+          <div class="panel filters-panel">
+            <div class="panel-title"><div><span class="section-index">01—A</span><h2>筛选作品</h2></div><button class="text-button" id="reset-filters">重置条件</button></div>
+            <form class="filter-grid" id="history-filters">
+              <label><span>用户 ID</span><input name="user_id" placeholder="输入用户 ID"></label>
+              <label><span>状态</span><select name="status"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+              <label><span>起始日期</span><input name="start_date" type="date"></label>
+              <label><span>结束日期</span><input name="end_date" type="date"></label>
+              <button class="primary-button filter-submit" type="submit"><svg class="icon icon-search" width="17" height="17" aria-hidden="true"><use href="#i-search"></use></svg>查询</button>
+            </form>
+          </div>
+          <div class="panel history-panel">
+            <div class="panel-title"><div><span class="section-index">01—B</span><h2>生成记录</h2><span class="count-pill" id="history-count">0 条</span></div><div class="panel-actions"><button class="icon-button" id="refresh-history" title="刷新"><svg class="icon icon-refresh" width="20" height="20" aria-hidden="true"><use href="#i-refresh"></use></svg></button><button class="danger-button" id="clear-history"><svg class="icon icon-trash" width="16" height="16" aria-hidden="true"><use href="#i-trash"></use></svg>清空历史</button></div></div>
+            <div class="table-wrap"><table><thead><tr><th>时间 / ID</th><th>生成提示词</th><th>模型 / 提供商</th><th>耗时</th><th>状态</th><th class="right">操作</th></tr></thead><tbody id="history-body"></tbody></table><div class="empty-state" id="history-empty"><div class="empty-orbit"><svg class="icon icon-sparkles" width="28" height="28" aria-hidden="true"><use href="#i-sparkles"></use></svg></div><h3>还没有生成记录</h3><p>完成第一次图片生成后，记录会显示在这里。</p></div></div>
+            <div class="pagination"><span id="page-summary">第 1 页</span><div><button class="soft-button" id="prev-page">上一页</button><button class="soft-button" id="next-page">下一页</button></div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-config" data-title="插件配置">
+          <div class="hero"><div><span class="eyebrow">IMAGE LAB / SETTINGS</span><h1>让创作，<em>按你的方式发生。</em></h1><p>集中管理 API 密钥、模型模板和消息发送策略。</p></div><div class="hero-number">02</div></div>
+        </section>
+
+        <footer><span>WAVESPEED · RUNNINGHUB · OPENAI</span><span>留一点空间，给想象。</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <dialog class="modal" id="detail-modal"><button class="modal-close" data-close-modal aria-label="关闭"><svg class="icon icon-close" width="20" height="20" aria-hidden="true"><use href="#i-close"></use></svg></button><div id="detail-content"></div></dialog>
+  <dialog class="modal confirm-modal" id="confirm-modal"><div class="confirm-icon">!</div><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="modal-actions"><button class="soft-button" data-confirm="cancel">取消</button><button class="danger-button" data-confirm="ok">确认</button></div></dialog>
+  <input type="file" id="file-picker" hidden>
+  <script type="module" src="./assets/app.js"></script>
+</body>
+</html>

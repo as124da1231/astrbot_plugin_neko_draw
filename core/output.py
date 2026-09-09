@@ -1,0 +1,289 @@
+"""Image transformations and platform delivery; original ordering and fallbacks."""
+import json
+import random
+import time
+import uuid
+from pathlib import Path
+from typing import Optional
+from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent
+from astrbot.api.message_components import At, Image
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
+
+class OutputService:
+    def __init__(self, config, data_dir, save_dir, plugin_dir):
+        self.conf = config
+        self.data_dir = data_dir
+        self.save_dir = save_dir
+        self.plugin_dir = plugin_dir
+        self._image_summary_quotes = self._load_summary_quotes()
+
+    def _load_summary_quotes(self) -> list[str]:
+        """加载图片外显金句：配置列表 + 金句文件，合并去重。"""
+        quotes: list[str] = list(self.conf.get("image_summary_quotes", []) or [])
+        for file_path in self.conf.get("image_summary_quotes_files", []) or []:
+            path = Path(file_path)
+            if not path.exists():
+                logger.warning(f"[neko_draw] 金句文件不存在，已跳过：{path}")
+                continue
+            try:
+                with path.open(encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        quotes.extend(str(q) for q in data if str(q).strip())
+                    else:
+                        logger.warning(f"[neko_draw] 金句文件内容不是数组，已跳过：{path}")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[neko_draw] 读取金句文件失败 {path}: {e}")
+        # 去重并过滤空字符串
+        seen = set()
+        result = []
+        for q in quotes:
+            q = q.strip()
+            if q and q not in seen:
+                seen.add(q)
+                result.append(q)
+        return result or ["[图片]"]
+
+    def _resolve_file_ref(self, raw) -> Optional[Path]:
+        """将 file 上传类型的配置值解析为绝对路径。
+
+        支持 list（取最后一张有效）和 str（直接用）。
+        相对路径尝试：插件数据目录、插件数据目录/files、插件目录、当前工作目录。
+        绝对路径直接检查。返回 None 表示未找到。
+        """
+        if isinstance(raw, list):
+            paths = [str(p).strip() for p in reversed(raw) if str(p).strip()]
+        elif isinstance(raw, str) and raw.strip():
+            paths = [raw.strip()]
+        else:
+            return None
+
+        for candidate in paths:
+            p = Path(candidate)
+            if p.is_absolute() and p.is_file():
+                return p
+            clean = candidate.lstrip("/\\")
+            for base in (self.data_dir, self.data_dir / "files", self.plugin_dir, Path.cwd()):
+                candidate_path = base / clean
+                if candidate_path.is_file():
+                    return candidate_path
+        return None
+
+    def _resolve_apng_first_frame(self) -> Optional[Path]:
+        """解析 APNG 第一帧图片路径，支持 file 上传、手动路径和内置默认图。
+
+        优先级：用户上传的 file（取最后一张）> 手动配置的路径 > 内置默认图。
+        """
+        raw = self.conf.get("apng_first_frame_path", "")
+        resolved = self._resolve_file_ref(raw)
+        if resolved is not None:
+            return resolved
+        # 内置默认图作为最后回退
+        default_frame = self.plugin_dir / "default_apng_frame.png"
+        if default_frame.exists():
+            return default_frame
+        return None
+
+    def _wrap_apng(self, image_paths: list[str]) -> list[str]:
+        """将生成的图片包装成两帧 APNG 动图。
+
+        第一帧：配置的首帧图片（等比缩放+居中+白底填充到生成图尺寸）
+        第二帧：生成的图片
+        返回 APNG 文件路径列表。若未开启、Pillow 不可用、首帧路径无效，
+        则直接返回原图路径列表。
+        """
+        if not bool(self.conf.get("enable_apng_wrap", False)):
+            return image_paths
+        if PILImage is None:
+            logger.warning("[neko_draw] Pillow 未安装，APNG 功能已禁用")
+            return image_paths
+
+        first_file = self._resolve_apng_first_frame()
+        if first_file is None:
+            logger.warning("[neko_draw] 未找到 APNG 第一帧图片（含内置默认图），APNG 功能已禁用")
+            return image_paths
+
+        first_duration = int(self.conf.get("apng_first_frame_duration", 100))
+        second_duration = int(self.conf.get("apng_second_frame_duration", 20000))
+        loop = int(self.conf.get("apng_loop", 0))
+        optimize = bool(self.conf.get("apng_optimize", True))
+
+        result_paths = []
+        try:
+            first_src = PILImage.open(first_file).convert("RGBA")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[neko_draw] 打开 APNG 首帧失败: {e}")
+            return image_paths
+
+        for idx, img_path in enumerate(image_paths):
+            try:
+                # 第二帧：生成的图片
+                second = PILImage.open(img_path).convert("RGBA")
+                target_w, target_h = second.size
+
+                # 第一帧：等比缩放 + 居中 + 白底填充
+                first = first_src.copy()
+                try:
+                    resample = PILImage.Resampling.LANCZOS
+                except AttributeError:  # Pillow < 9.1 兼容
+                    resample = PILImage.LANCZOS
+                first.thumbnail((target_w, target_h), resample)
+                canvas = PILImage.new("RGBA", (target_w, target_h), (255, 255, 255, 255))
+                offset = ((target_w - first.width) // 2, (target_h - first.height) // 2)
+                canvas.paste(first, offset, first)
+                first = canvas
+
+                # 保存 APNG
+                out_path = self.save_dir / f"apng_{uuid.uuid4().hex}_{idx}.png"
+                first.save(
+                    out_path,
+                    format="PNG",
+                    save_all=True,
+                    append_images=[second],
+                    duration=[first_duration, second_duration],
+                    loop=loop,
+                    optimize=optimize,
+                    disposal=2,
+                )
+                result_paths.append(str(out_path))
+                logger.info(
+                    f"[neko_draw] APNG 合成完成: {out_path.name} "
+                    f"({target_w}x{target_h}, 首帧{first_duration}ms/次帧{second_duration}ms)"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[neko_draw] APNG 合成失败，使用原图: {e}")
+                result_paths.append(img_path)
+
+        return result_paths
+
+    def _image_chain_with_at(self, event: AstrMessageEvent, image_paths: list[str]) -> list:
+        """构建带 @ 触发者的图片消息链（用于普通图片发送）。
+
+        若开启了 enable_at_sender 且是群聊，则在图片前插入 At 组件；
+        私聊或未开启时直接返回图片列表。
+        """
+        components = []
+        if bool(self.conf.get("enable_at_sender", False)) and event.get_group_id():
+            components.append(At(event.get_sender_id()))
+        components.extend([Image.fromFileSystem(p) for p in image_paths])
+        return components
+
+    async def _send_image_with_summary(
+        self, event: AstrMessageEvent, image_paths: list[str]
+    ) -> bool:
+        """发送带外显金句的图片消息（参考 astrbot_plugin_outputpro 的 summary 实现）。
+
+        原理：把 Image 组件转成 OneBot JSON，在图片消息段的 data 中
+        设置 summary 字段为随机金句，然后直接用 bot.send() 发送原始
+        OneBot 消息。这样 QQ 群列表中原本显示「[图片]」的位置会显示
+        金句文字，点开后仍是正常图片。仅 aiocqhttp 平台且单张图片时生效。
+        """
+        # 图片外显仅支持单张图片
+        if len(image_paths) != 1:
+            return False
+
+        # 延迟导入，避免非 aiocqhttp 环境报错
+        try:
+            from astrbot.core.message.message_event_result import MessageChain
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
+        except ImportError:
+            return False
+
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return False
+
+        try:
+            # 把 Image 组件转成 OneBot JSON 消息段
+            chain = MessageChain([Image.fromFileSystem(image_paths[0])])
+            obmsg = await event._parse_onebot_json(chain)
+            # 设置图片外显金句（核心）
+            quote = random.choice(self._image_summary_quotes)
+            obmsg[0]["data"]["summary"] = quote
+            # 若开启了 @ 触发者且是群聊，在消息前插入 at 消息段
+            if bool(self.conf.get("enable_at_sender", False)) and event.get_group_id():
+                obmsg.insert(0, {"type": "at", "data": {"qq": str(event.get_sender_id())}})
+            # 直接发送原始 OneBot 消息
+            await event.bot.send(event.message_obj.raw_message, obmsg)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[neko_draw] 图片外显发送失败，回退普通图片: {e}"
+            )
+            return False
+
+    async def _send_forward_message(
+        self, event: AstrMessageEvent, image_paths: list[str], summary: str = ""
+    ) -> bool:
+        """直接调用 OneBot v11 原始 API 发送合并转发消息。
+
+        把图片打包成 QQ 合并转发（聊天记录）卡片发出。
+        若传入 summary，则合并转发节点内的图片消息段会带上 summary
+        字段（图片外显金句），实现外显+合并转发同时生效。
+        仅 aiocqhttp 平台支持，其他平台返回 False 由调用方回退。
+        """
+        try:
+            platform = event.get_platform_name()
+        except Exception:  # noqa: BLE001
+            platform = ""
+        if platform != "aiocqhttp":
+            return False
+
+        group_id = event.get_group_id()
+        user_id = event.get_sender_id()
+        bot_id = event.get_self_id()
+
+        # 构建节点内容：图片（可选带 summary 外显金句）
+        content = []
+        # 若开启了 @ 触发者且是群聊，在节点内容最前面插入 at 消息段
+        if bool(self.conf.get("enable_at_sender", False)) and group_id:
+            content.append({"type": "at", "data": {"qq": str(user_id)}})
+        for p in image_paths:
+            img_data = {"file": f"file://{p}"}
+            if summary:
+                img_data["summary"] = summary
+            content.append({"type": "image", "data": img_data})
+
+        nickname = str(self.conf.get("forward_node_name", "")).strip()
+        if not nickname:
+            nickname = "猫娘画图"
+
+        forward_msg = [
+            {
+                "type": "node",
+                "data": {
+                    "user_id": int(bot_id) if bot_id else 10000,
+                    "nickname": nickname,
+                    "content": content,
+                },
+            }
+        ]
+
+        try:
+            bot_api = getattr(event.bot, "api", None)
+            if bot_api is None:
+                logger.warning("[neko_draw] event.bot.api 不存在，无法发送合并转发")
+                return False
+            if group_id:
+                await bot_api.call_action(
+                    "send_group_forward_msg",
+                    group_id=int(group_id),
+                    messages=forward_msg,
+                )
+            else:
+                await bot_api.call_action(
+                    "send_private_forward_msg",
+                    user_id=int(user_id),
+                    messages=forward_msg,
+                )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[neko_draw] 合并转发发送失败: {e}"
+            )
+            return False

@@ -1,0 +1,14 @@
+name: astrbot_plugin_neko_draw
+display_name: 猫娘画图
+short_desc: 支持 APNG 双帧展示的多提供商 AI 画图插件。
+desc: 可将内置猫娘首帧与生成图片合成为 APNG，并支持 WaveSpeed、RunningHub、OpenAI 兼容接口、参考图编辑、生成历史与多主题 WebUI。
+version: 1.0.0
+author: as124da1231
+astrbot_version: ">=4.24.1"
+repo: https://github.com/as124da1231/astrbot_plugin_neko_draw
+entry: main.py
+license: MIT
+tags:
+  - image
+  - ai
+  - drawing
