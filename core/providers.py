@@ -9,6 +9,7 @@ import aiohttp
 from .openapi import OpenAPIClient, OpenAPIError
 from .runninghub import RunningHubClient
 from .wavespeed import WavespeedClient
+from .protocols import infer_provider_type, normalize_provider_base_url
 
 
 PROVIDER_TYPES = {"wavespeed", "runninghub", "openai", "astrbot"}
@@ -18,16 +19,6 @@ def normalize_provider_type(value: object) -> str:
     """把界面展示值规整为内部客户端类型。"""
     raw = str(value or "").strip().lower()
     return "openai" if raw in {"openai", "openapi"} else raw
-
-
-def infer_provider_type(base_url: object) -> str:
-    """仅根据地址识别调用协议；未知服务按通用 OpenAI 图像接口处理。"""
-    value = str(base_url or "").strip().lower()
-    if "wavespeed.ai" in value or "/api/v3" in value:
-        return "wavespeed"
-    if "runninghub.cn" in value or "/openapi/v2" in value:
-        return "runninghub"
-    return "openai"
 
 
 def list_astrbot_providers(context: Any) -> list[dict[str, Any]]:
@@ -65,11 +56,7 @@ def list_astrbot_providers(context: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_astrbot_base_url(base_url: str, protocol: str) -> str:
-    lower = base_url.lower()
-    marker = "/api/v3" if protocol == "wavespeed" else "/openapi/v2"
-    if protocol in {"wavespeed", "runninghub"} and marker in lower:
-        return base_url[: lower.index(marker) + len(marker)]
-    return base_url.rstrip("/")
+    return normalize_provider_base_url(base_url, protocol)
 
 
 def resolve_astrbot_provider(

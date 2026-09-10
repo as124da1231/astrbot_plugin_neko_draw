@@ -1,3 +1,5 @@
+import { inferredProtocol, recommendedModelConfig } from "./model-profiles.js?v=2.2.3";
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name, size = 18) => `<svg class="icon icon-${name}" width="${size}" height="${size}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
@@ -60,13 +62,6 @@ const PROVIDER_DEFAULT_URLS = {
   OpenAI: "https://api.openai.com/v1",
   AstrBot: "",
 };
-
-function inferredProtocol(url = "") {
-  const value = String(url).toLowerCase();
-  if (value.includes("wavespeed.ai") || value.includes("/api/v3")) return "WaveSpeed";
-  if (value.includes("runninghub.cn") || value.includes("/openapi/v2")) return "RunningHub";
-  return "OpenAI";
-}
 
 function toast(message, type = "success") {
   let stack = $(".toast-stack");
@@ -552,6 +547,7 @@ function astrbotProviderSelectField(value, onChange) {
 
 function integratedDefaultSelectField(key, value, onChange) {
   const select = document.createElement("select");
+  select.add(new Option("无（不设置默认模型）", ""));
   const mode = key === "default_edit_model_v2" ? "edit" : "text";
   const choices = [];
   (state.draft.image_providers || []).forEach(provider => {
@@ -566,7 +562,7 @@ function integratedDefaultSelectField(key, value, onChange) {
     const models = provider.models?.length ? provider.models : (provider.model ? [provider.model] : []);
     models.forEach(model => choices.push({ value: `@astrbot:${provider.id}:${model}`, label: `${provider.id} / ${model}`, group: "AstrBot 已有模型" }));
   });
-  if (!choices.length) select.add(new Option("暂无可用模型，请先配置提供商", ""));
+  if (!choices.length) select.options[0].textContent = "无（暂无可用模型）";
   ["猫娘画图", "AstrBot 已有模型"].forEach(groupName => {
     const rows = choices.filter(item => item.group === groupName); if (!rows.length) return;
     const group = document.createElement("optgroup"); group.label = groupName;
@@ -579,39 +575,11 @@ function integratedDefaultSelectField(key, value, onChange) {
   return select;
 }
 
-function recommendedModelConfig(providerUrl, modelId, mode = "text") {
-  const id = String(modelId || "").toLowerCase();
-  const protocol = inferredProtocol(providerUrl);
-  const editing = mode === "edit";
-  const result = { label: "通用 OpenAI 图像", params: { _endpoint: editing ? "images/edits" : "images/generations", size: "1024x1024", n: 1 }, refer_field: editing ? "images" : "", max_refer_images: editing ? 10 : 0 };
-  if (id.includes("gpt-image") || id.includes("dall-e")) {
-    result.label = id.includes("dall-e") ? "OpenAI DALL·E" : "OpenAI GPT Image";
-    result.params = { ...result.params, quality: "auto", output_format: "png" };
-  } else if (id.includes("qwen") && id.includes("image")) {
-    result.label = "Qwen Image"; result.params = { image_size: "1024x1024", batch_size: 1, num_inference_steps: 20, guidance_scale: 7.5 };
-  } else if (id.includes("seedream")) {
-    result.label = "Seedream";
-    result.params = protocol === "RunningHub" ? { width: 2048, height: 2048, maxImages: 1, sequentialImageGeneration: "disabled" } : { aspect_ratio: "1:1", resolution: "1k", output_format: "jpeg", prompt_optimization_mode: "fast" };
-  } else if (id.includes("flux")) {
-    result.label = "FLUX"; result.params = { width: 1024, height: 1024, num_inference_steps: 28, guidance_scale: 3.5, seed: -1 };
-  } else if (id.includes("stable-diffusion") || id.includes("sdxl") || id.includes("stability")) {
-    result.label = "Stable Diffusion"; result.params = { width: 1024, height: 1024, steps: 30, cfg_scale: 7, seed: -1 };
-  } else if (id.includes("imagen") || id.includes("gemini") && id.includes("image")) {
-    result.label = "Google Imagen / Gemini Image"; result.params = { aspect_ratio: "1:1", output_format: "png", number_of_images: 1 };
-  } else if (protocol === "WaveSpeed") {
-    result.label = "WaveSpeed 通用模型"; result.params = { output_format: "jpeg" };
-  } else if (protocol === "RunningHub") {
-    result.label = "RunningHub 自定义工作流"; result.params = {};
-  }
-  return result;
-}
-
 function modelEditor(provider, initial, editing, onDone) {
   const dialog = makeDialog("modal template-editor-modal");
   const candidate = clone(initial || { name: "", model: "", mode: "text", enabled: true, enabled_as_default: true, fallback_order: 20, refer_field: "", max_refer_images: 0, min_prompt_length: 0, params: {}, custom_model: true });
   let recommendation = recommendedModelConfig(provider.base_url, candidate.model, candidate.mode);
-  if (!editing && candidate.model && !Object.keys(candidate.params || {}).length) { candidate.params = clone(recommendation.params); candidate.refer_field = recommendation.refer_field; candidate.max_refer_images = recommendation.max_refer_images; }
-  dialog.innerHTML = `<div class="template-modal-head"><div><span class="eyebrow">IMAGE LAB / MODEL</span><h2>${editing ? "修改模型" : "添加模型"}</h2><p>${provider.name || "模型提供商"}</p></div><button class="modal-close" type="button">${icon("close")}</button></div><div class="template-modal-body"><div class="template-modal-error"></div><div class="model-recommendation"><span>参数模板：<b></b><small>首次添加时自动填入，之后可自由增删修改</small></span><button class="soft-button restore-params" type="button">${icon("refresh",15)}恢复推荐参数</button></div><div class="field-grid model-editor-grid"></div></div><div class="template-modal-foot"><button class="soft-button model-test" type="button">${icon("refresh",16)}测试模型连接</button><button class="soft-button cancel" type="button">取消</button><button class="primary-button confirm" type="button">${icon("save",16)}保存模型</button></div>`;
+  dialog.innerHTML = `<div class="template-modal-head"><div><span class="eyebrow">IMAGE LAB / MODEL</span><h2>${editing ? "修改模型" : "添加模型"}</h2><p>${provider.name || "模型提供商"}</p></div><button class="modal-close" type="button">${icon("close")}</button></div><div class="template-modal-body"><div class="template-modal-error"></div><div class="model-recommendation"><span>可添加参数：<b></b><small>不会自动修改；点击后只补充尚未设置的推荐项</small></span><button class="soft-button restore-params" type="button">${icon("plus",15)}添加推荐参数</button></div><div class="field-grid model-editor-grid"></div></div><div class="template-modal-foot"><button class="soft-button model-test" type="button">${icon("refresh",16)}测试模型连接</button><button class="soft-button cancel" type="button">取消</button><button class="primary-button confirm" type="button">${icon("save",16)}保存模型</button></div>`;
   const grid = $(".model-editor-grid", dialog);
   const specs = {
     model: { type: "string", description: "模型 ID", hint: candidate.custom_model ? "自定义模型允许手工填写服务商模型 ID" : "从连接返回的模型列表中选择" },
@@ -634,15 +602,14 @@ function modelEditor(provider, initial, editing, onDone) {
     const field = createField(fieldKey, spec, candidate[fieldKey], next => {
       candidate[fieldKey] = next;
       if (fieldKey === "model" && !candidate.name) candidate.name = next;
-      if (fieldKey === "mode" && next === "edit" && !candidate.refer_field) candidate.refer_field = "images";
       if (fieldKey === "mode") { recommendation = recommendedModelConfig(provider.base_url, candidate.model, next); $(".model-recommendation b", dialog).textContent = recommendation.label; }
-      if (fieldKey === "model" && !editing) { recommendation = recommendedModelConfig(provider.base_url, next, candidate.mode); candidate.params = clone(recommendation.params); candidate.refer_field = recommendation.refer_field; candidate.max_refer_images = recommendation.max_refer_images; renderFields(); }
+      if (fieldKey === "model" && !editing) { recommendation = recommendedModelConfig(provider.base_url, next, candidate.mode); renderFields(); }
     }, true);
     grid.append(field);
   });
   };
   renderFields();
-  $(".restore-params", dialog).onclick = () => { recommendation = recommendedModelConfig(provider.base_url, candidate.model, candidate.mode); candidate.params = clone(recommendation.params); candidate.refer_field = recommendation.refer_field; candidate.max_refer_images = recommendation.max_refer_images; renderFields(); toast(`已恢复${recommendation.label}推荐参数`); };
+  $(".restore-params", dialog).onclick = () => { recommendation = recommendedModelConfig(provider.base_url, candidate.model, candidate.mode); candidate.params = { ...clone(recommendation.params), ...(candidate.params || {}) }; if (!candidate.refer_field) candidate.refer_field = recommendation.refer_field; if (!candidate.max_refer_images) candidate.max_refer_images = recommendation.max_refer_images; renderFields(); toast(`已添加${recommendation.label}推荐参数`); };
   const close = () => dialog.close(); $(".modal-close", dialog).onclick = close; $(".cancel", dialog).onclick = close;
   $(".model-test", dialog).onclick = async event => {
     const button = event.currentTarget; button.disabled = true;
@@ -653,7 +620,6 @@ function modelEditor(provider, initial, editing, onDone) {
   $(".confirm", dialog).onclick = () => {
     const error = !String(candidate.model || "").trim() ? "请选择或填写模型 ID" : !String(candidate.name || "").trim() ? "请填写显示名称" : "";
     const box = $(".template-modal-error", dialog); box.textContent = error; box.classList.toggle("is-visible", !!error); if (error) return;
-    if (inferredProtocol(provider.base_url) === "OpenAI") candidate.params = { _endpoint: candidate.mode === "edit" ? "images/edits" : "images/generations", ...(candidate.params || {}) };
     onDone(candidate); dialog.close();
   };
   dialog.showModal();
@@ -1091,6 +1057,20 @@ async function saveConfig(button = $("#global-save")) {
     return;
   }
   if (!button) return;
+  const availableDefaults = { text: new Set([""]), edit: new Set([""]) };
+  (state.draft.image_providers || []).forEach(provider => {
+    if (!provider || provider.enabled === false) return;
+    (provider.models || []).forEach(model => {
+      if (model && model.enabled !== false && model.enabled_as_default !== false) availableDefaults[String(model.mode || "text")]?.add(String(model.name || model.model || "").trim());
+    });
+  });
+  (state.astrbotProviders || []).forEach(provider => {
+    const models = provider.models?.length ? provider.models : (provider.model ? [provider.model] : []);
+    models.forEach(model => { availableDefaults.text.add(`@astrbot:${provider.id}:${model}`); availableDefaults.edit.add(`@astrbot:${provider.id}:${model}`); });
+  });
+  for (const [key, mode] of [["default_text_model_v2", "text"], ["default_edit_model_v2", "edit"]]) {
+    if (!availableDefaults[mode].has(String(state.draft[key] || "").trim())) state.draft[key] = "";
+  }
   const idleContent = button.innerHTML;
   button.disabled = true; button.innerHTML = `<span class="spinner"></span>`; button.setAttribute("aria-label", "保存并重载中");
   try {

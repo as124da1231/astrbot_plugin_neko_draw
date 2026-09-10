@@ -14,6 +14,7 @@ import logging
 from typing import Mapping, Optional
 
 import aiohttp
+from .request_profiles import normalize_openai_image_request
 
 logger = logging.getLogger("neko_draw")
 
@@ -66,7 +67,7 @@ class OpenAPIClient:
 
         model 放入请求体；端点从 payload 的 _endpoint 取（弹出），默认 images/generations。
         """
-        endpoint = payload.pop("_endpoint", DEFAULT_ENDPOINT)
+        endpoint, payload = normalize_openai_image_request(self.base_url, model, payload)
         payload["model"] = model
         url = f"{self.base_url}/{endpoint}"
         async with self._semaphore:

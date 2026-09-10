@@ -89,6 +89,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(provider_factory.infer_provider_type('https://api.wavespeed.ai/api/v3'), 'wavespeed')
         self.assertEqual(provider_factory.infer_provider_type('https://www.runninghub.cn/openapi/v2'), 'runninghub')
         self.assertEqual(provider_factory.infer_provider_type('https://api.siliconflow.cn/v1'), 'openai')
+        self.assertEqual(provider_factory.infer_provider_type('https://ark.cn-beijing.volces.com/api/v3'), 'openai')
+        self.assertEqual(provider_factory.infer_provider_type('https://example.com/api/v3'), 'openai')
 
     def test_default_fallback_uses_lowest_number_and_matching_mode(self):
         manager = templates.TemplateManager([
@@ -161,6 +163,15 @@ class CoreTests(unittest.TestCase):
         t = templates.ModelTemplate('x', 'm', params=values)
         self.assertEqual(templates.build_payload('cat', {}, t), {**values, 'prompt': 'cat'})
 
+    def test_single_image_field_uses_scalar_data_uri(self):
+        t = templates.ModelTemplate('edit', 'Qwen/Qwen-Image-Edit-2509', refer_field='image', max_refer_images=1)
+        self.assertEqual(templates.build_payload('edit it', {}, t, ['data:image/png;base64,AA=='])['image'], 'data:image/png;base64,AA==')
+
+    def test_plural_image_field_keeps_list(self):
+        t = templates.ModelTemplate('edit', 'model', refer_field='images', max_refer_images=2)
+        refs = ['data:image/png;base64,AA==', 'data:image/png;base64,AQ==']
+        self.assertEqual(templates.build_payload('edit it', {}, t, refs)['images'], refs)
+
     def test_siliconflow_images_response_is_extracted(self):
         client = load('core.openapi').OpenAPIClient
         self.assertEqual(
@@ -168,9 +179,23 @@ class CoreTests(unittest.TestCase):
             ['https://cdn.example/result.png'],
         )
 
+    def test_siliconflow_qwen_edit_uses_generation_endpoint_and_scalar_image(self):
+        normalize = load('core.request_profiles').normalize_openai_image_request
+        endpoint, body = normalize(
+            'https://api.siliconflow.cn/v1', 'Qwen/Qwen-Image-Edit-2509',
+            {'_endpoint': 'images/edits', 'images': ['data:image/png;base64,AA=='], 'prompt': 'edit'},
+        )
+        self.assertEqual(endpoint, 'images/generations')
+        self.assertEqual(body['image'], 'data:image/png;base64,AA==')
+        self.assertNotIn('images', body)
+
     def test_generated_image_mime_can_be_detected_without_content_type(self):
         downloader = load('core.downloader').Downloader
         self.assertEqual(downloader._detect_image_mime(b'\x89PNG\r\n\x1a\nrest'), 'image/png')
+
+    def test_astrbot_base64_image_ref_is_supported(self):
+        downloader = load('core.downloader').Downloader(self.path)
+        self.assertEqual(asyncio.run(downloader.download_to_data_uri('base64://AA==')), 'data:image/png;base64,AA==')
 
     def test_quoted_preset(self):
         p = parser.parse_prompt_message('nd cat', ['nd {{user_text}} --negative_prompt "bad quality"'])
@@ -301,9 +326,11 @@ class CoreTests(unittest.TestCase):
         self.assertIn('providers/models', script)
         self.assertIn('models/test', script)
         self.assertIn('recommendedModelConfig', script)
-        self.assertIn('恢复推荐参数', script)
-        self.assertIn('首次添加时自动填入，之后可自由增删修改', script)
+        self.assertIn('添加推荐参数', script)
+        self.assertIn('不会自动修改；点击后只补充尚未设置的推荐项', script)
+        self.assertNotIn('首次添加时自动填入', script)
         self.assertIn('.model-recommendation', styles)
+        self.assertIn('无（不设置默认模型）', script)
 
     def test_rate_limiter_reconfigure_preserves_usage(self):
         limiter = RateLimiter({'enable_rate_limit': True, 'rate_limit_rules': [
@@ -340,6 +367,17 @@ class CoreTests(unittest.TestCase):
             'provider': 'OpenAI',
         }]}, schema)
         self.assertEqual(normalized['model_templates'][0]['provider'], 'OpenAI')
+
+    def test_unavailable_integrated_default_is_saved_as_none(self):
+        schema = json.loads((ROOT / '_conf_schema.json').read_text(encoding='utf-8'))
+        normalized = validate_config({
+            'image_providers': [{
+                'name': 'p', 'base_url': 'https://api.example/v1', 'enabled': True,
+                'models': [{'name': 'disabled', 'model': 'x', 'mode': 'edit', 'enabled': False}],
+            }],
+            'default_edit_model_v2': 'disabled',
+        }, schema)
+        self.assertEqual(normalized['default_edit_model_v2'], '')
 
     def test_config_rejects_invalid_model_providers(self):
         schema = json.loads((ROOT / '_conf_schema.json').read_text(encoding='utf-8'))
@@ -471,6 +509,24 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.context = types.SimpleNamespace(register_web_api=lambda *args: None)
         self.plugin = self.main.NekoDrawPlugin(self.context, self.config)
         self.event = types.SimpleNamespace(message_str='nd cat', get_messages=lambda: [], get_sender_id=lambda: '123', get_group_id=lambda: '', plain_result=lambda text: text, chain_result=lambda chain: chain, send=AsyncMock())
+
+    async def test_qq_image_url_falls_back_to_onebot_file_id(self):
+        target = self.path / 'resolved.png'
+        PILImage.new('RGB', (4, 4), 'blue').save(target)
+        image = self.main.Image('qq-file-id.jpg')
+        image.url = 'https://expired.example/image.jpg&amp;token=old'
+        self.event.get_messages = lambda: [image]
+        call = AsyncMock(return_value={'data': {'file': str(target)}})
+        self.event.bot = types.SimpleNamespace(api=types.SimpleNamespace(call_action=call))
+        original = self.plugin.downloader.materialize_image
+
+        async def materialize(value):
+            return await original(value) if str(value) == str(target) else None
+
+        self.plugin.downloader.materialize_image = materialize
+        resolved = await self.plugin._materialize_message_image(self.event, image.url)
+        self.assertEqual(resolved, str(target.resolve()))
+        self.assertTrue(any(item.args[0] == 'get_image' for item in call.await_args_list))
 
     async def test_ordinary_message_silent_when_limited(self):
         self.plugin.rate_limiter.reserve('123')

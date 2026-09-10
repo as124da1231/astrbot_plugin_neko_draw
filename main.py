@@ -205,8 +205,71 @@ class NekoDrawPlugin(Star):
 
     async def _extract_all_image_urls(self, event: AstrMessageEvent) -> list[str]:
         urls = self._extract_image_urls(event)
+        # AstrBot 4.28+ 自带的引用消息解析器能通过 reply id 重新获取原消息，
+        # 处理 Reply.chain 为空、base64:// 和 QQ file ID 等平台差异。
+        try:
+            from astrbot.core.utils.quoted_message import extract_quoted_message_images
+            urls.extend(await extract_quoted_message_images(event))
+        except (ImportError, AttributeError):
+            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("[IMAGE] AstrBot 引用图片解析器未返回结果", exc_info=True)
         urls.extend(await self._extract_forward_image_urls(event))
-        return urls
+        return list(dict.fromkeys(str(url) for url in urls if str(url).strip()))
+
+    async def _materialize_message_image(self, event: AstrMessageEvent, ref: str) -> Optional[str]:
+        """落地消息图片；普通下载失败时通过 OneBot get_image 解析 QQ 文件 ID。"""
+        candidates = [str(ref)]
+
+        # AstrBot Image 经常同时包含临时 url 与 QQ file ID。历史功能不能只
+        # 保留其中一个：URL 过期时仍应使用 file ID 让 OneBot 重新解析。
+        def collect(chain) -> None:
+            if not isinstance(chain, (list, tuple)):
+                return
+            for component in chain:
+                if isinstance(component, Image):
+                    values = [str(getattr(component, key, "") or "") for key in ("url", "file", "path")]
+                    if str(ref) in values:
+                        candidates.extend(value for value in values if value)
+                child = getattr(component, "chain", None)
+                if child:
+                    collect(child)
+
+        collect(event.get_messages())
+        candidates = list(dict.fromkeys(candidates))
+        for candidate in candidates:
+            local = await self.downloader.materialize_image(candidate)
+            if local:
+                return local
+        bot = getattr(event, "bot", None)
+        caller = getattr(getattr(bot, "api", None), "call_action", None)
+        if not callable(caller):
+            return None
+        attempts = []
+        for candidate in candidates:
+            attempts.extend((
+                ("get_image", {"file": candidate}),
+                ("get_image", {"file_id": candidate}),
+                ("get_image", {"id": candidate}),
+                ("get_file", {"file_id": candidate}),
+            ))
+        for action, params in attempts:
+            try:
+                payload = await caller(action, **params)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+                payload = payload["data"]
+            if not isinstance(payload, dict):
+                continue
+            for key in ("file", "path", "url"):
+                resolved = payload.get(key)
+                if resolved and str(resolved) not in candidates:
+                    local = await self.downloader.materialize_image(str(resolved))
+                    if local:
+                        return local
+        logger.warning("[IMAGE] QQ 原图无法解析，已尝试 URL、本地引用和 OneBot 文件接口: %s", str(ref)[:160])
+        return None
 
     @staticmethod
     def _is_command_text(text: str) -> bool:
@@ -309,13 +372,14 @@ class NekoDrawPlugin(Star):
         local_paths = []
         temporary_paths = []
         for ref in refs:
-            local = await self.downloader.materialize_image(ref)
+            original_is_local = Path(str(ref)).is_file()
+            local = await self._materialize_message_image(event, ref)
             if not local:
                 for path in temporary_paths:
                     Path(path).unlink(missing_ok=True)
                 return event.plain_result("❌ 有图片下载失败，请重新发送后再试")
             local_paths.append(local)
-            if str(ref).startswith(("http://", "https://", "data:")) and Path(local).parent.resolve() == self.save_dir.resolve():
+            if not original_is_local and Path(local).parent.resolve() == self.save_dir.resolve():
                 temporary_paths.append(local)
         durations = [duration_ms] * len(local_paths)
         if len(local_paths) == 1:
@@ -609,11 +673,12 @@ class NekoDrawPlugin(Star):
         source_temporary_paths = []
         prepared_image_urls = []
         for ref in image_urls:
-            local = await self.downloader.materialize_image(ref)
+            original_is_local = Path(str(ref)).is_file()
+            local = await self._materialize_message_image(event, ref)
             if local:
                 prepared_image_urls.append(local)
                 source_local_paths.append(local)
-                if str(ref).startswith(("http://", "https://", "data:")) and Path(local).parent.resolve() == self.save_dir.resolve():
+                if not original_is_local and Path(local).parent.resolve() == self.save_dir.resolve():
                     source_temporary_paths.append(local)
             else:
                 prepared_image_urls.append(ref)

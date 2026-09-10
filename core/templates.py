@@ -148,5 +148,10 @@ def build_payload(
         payload[key] = normalize_param(value)
     payload["prompt"] = prompt
     if refer_uris and template.refer_field:
-        payload[template.refer_field] = refer_uris
+        # 主流兼容接口的 image/init_image/input_image 是单图字符串；
+        # images 等复数字段保留数组。模型配置仍可自行改成其他字段。
+        scalar_fields = {"image", "init_image", "input_image"}
+        payload[template.refer_field] = (
+            refer_uris[0] if template.refer_field.lower() in scalar_fields else refer_uris
+        )
     return payload

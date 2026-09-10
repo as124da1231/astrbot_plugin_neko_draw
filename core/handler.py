@@ -90,6 +90,8 @@ class DrawingHandler:
     ) -> tuple[Optional[ModelTemplate], str]:
         """选择模型模板，返回 (模板, 模式标识)。"""
         def configured_default(name: str, image_mode: bool) -> Optional[ModelTemplate]:
+            if not str(name or "").strip():
+                return None
             template = self.templates.resolve(name)
             if (
                 template is not None

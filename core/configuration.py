@@ -116,6 +116,7 @@ def validate_config(config, schema):
     if isinstance(integrated, list):
         integrated_names = []
         integrated_models = []
+        available_models_by_mode = {'text': set(), 'edit': set()}
         for p_index, provider in enumerate(integrated):
             if not isinstance(provider, dict):
                 raise ValueError(f'模型提供商[{p_index + 1}]格式无效')
@@ -143,8 +144,11 @@ def validate_config(config, schema):
                     raise ValueError(f'模型提供商「{name}」的模型名称和模型 ID 不能为空')
                 local_names.append(alias)
                 integrated_models.append(alias)
-                if str(model.get('mode', 'text')).lower() not in {'text', 'edit'}:
+                model_mode = str(model.get('mode', 'text')).lower()
+                if model_mode not in {'text', 'edit'}:
                     raise ValueError(f'模型「{alias}」的用途必须是文生图或图片编辑')
+                if provider.get('enabled', True) and model.get('enabled', True) and model.get('enabled_as_default', True):
+                    available_models_by_mode[model_mode].add(alias)
             duplicate_local = sorted({n for n in local_names if local_names.count(n) > 1})
             if duplicate_local:
                 raise ValueError(f'提供商「{name}」内模型名称重复：{"、".join(duplicate_local)}')
@@ -154,10 +158,10 @@ def validate_config(config, schema):
         duplicate_models_v2 = sorted({n for n in integrated_models if integrated_models.count(n) > 1})
         if duplicate_models_v2:
             raise ValueError(f'模型显示名称必须全局唯一，重复项：{"、".join(duplicate_models_v2)}')
-        for key, label in (('default_text_model_v2', '默认文生图模型'), ('default_edit_model_v2', '默认图片编辑模型')):
+        for key, mode in (('default_text_model_v2', 'text'), ('default_edit_model_v2', 'edit')):
             selected = str(result.get(key, '')).strip()
-            if selected and not selected.startswith('@astrbot:') and selected not in integrated_models:
-                raise ValueError(f'{label}「{selected}」不存在或未启用')
+            if selected and not selected.startswith('@astrbot:') and selected not in available_models_by_mode[mode]:
+                result[key] = ''
         from .providers import sync_image_provider_config
         sync_image_provider_config(result)
 

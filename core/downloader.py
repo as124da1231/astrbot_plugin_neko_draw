@@ -12,6 +12,7 @@ import re
 import uuid
 import asyncio
 import logging
+import html
 from pathlib import Path
 from typing import Optional
 
@@ -75,6 +76,9 @@ class Downloader:
 
     async def download_to_data_uri(self, url: str) -> Optional[str]:
         """下载远程图片并转为 data URI（本地路径直接读取）。"""
+        url = html.unescape(str(url or "").strip())
+        if url.startswith("base64://"):
+            return f"data:image/png;base64,{url[len('base64://') :]}"
         if _DATA_URI_RE.match(url):
             return url
         if url.startswith('file://'):
@@ -85,14 +89,22 @@ class Downloader:
         if os.path.isfile(url):
             return self.to_data_uri(url)
         try:
-            async with self.session.get(url, proxy=self.proxy) as resp:
+            async with self.session.get(
+                url, proxy=self.proxy, allow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 NekoDraw/2.2"},
+            ) as resp:
                 if resp.status != 200:
+                    logger.warning("参考图下载失败 HTTP %s: %s", resp.status, str(url)[:240])
                     return None
                 raw = await resp.read()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            logger.warning("参考图下载异常 %s: %s", type(exc).__name__, str(url)[:240])
             return None
-        mime = resp.headers.get("Content-Type", "image/png").split(";")[0]
-        if not mime.startswith("image/"):
+        declared = resp.headers.get("Content-Type", "").split(";")[0].lower()
+        detected = self._detect_image_mime(raw)
+        mime = detected or (declared if declared.startswith("image/") else None)
+        if not mime:
+            logger.warning("参考图响应不是图片（Content-Type=%s，大小=%s）: %s", declared or "unknown", len(raw), str(url)[:240])
             return None
         return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 

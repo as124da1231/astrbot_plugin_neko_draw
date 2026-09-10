@@ -8,18 +8,31 @@
 
 组件类型通过参数注入，避免 core 层依赖 AstrBot，便于独立测试。
 """
+import os
 from typing import Optional
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mpo"}
 
 
 def _component_ref(component, attrs: tuple[str, ...]) -> Optional[str]:
-    """返回组件上第一个非空的媒体引用字段。"""
+    """优先返回可直接读取的本地/data 引用，再使用临时网络 URL。"""
+    candidates: list[tuple[str, str]] = []
     for attr in attrs:
         value = getattr(component, attr, None)
         if value:
-            return str(value)
-    return None
+            candidates.append((attr, str(value)))
+    for _attr, value in candidates:
+        if value.startswith("data:") or value.startswith("file://") or os.path.isfile(value):
+            return value
+    # 多个网络地址并存时优先 Image.url；Image.file 有时只是 QQ 文件 ID，
+    # 也可能是兼容层生成的临时地址。
+    for attr, value in candidates:
+        if attr == "url" and value.startswith(("http://", "https://")):
+            return value
+    for _attr, value in candidates:
+        if value.startswith(("http://", "https://")):
+            return value
+    return candidates[0][1] if candidates else None
 
 
 def extract_image_urls(
@@ -57,7 +70,7 @@ def extract_image_urls(
                     walk(sub)
                 continue
             if isinstance(comp, image_types):
-                ref = _component_ref(comp, ("url", "file", "path"))
+                ref = _component_ref(comp, ("file", "path", "url"))
                 if ref:
                     urls.append(ref)
                 continue
