@@ -717,6 +717,47 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         [x async for x in self.plugin.on_message(self.event)]
         self.assertEqual(observed, {'frames': 2, 'first': 100.0, 'second': 4000.0})
 
+        history = self.plugin.apng_history_store.list()['items'][0]
+        self.assertEqual(history['frame_count'], 2)
+        self.assertEqual(history['source_count'], 1)
+
+    async def test_apng_supplemental_extractor_duplicate_is_not_a_second_input(self):
+        self.config['apng_maker_min_frames'] = 1
+        self.config['apng_enable_drawing_message'] = False
+        source = self.path / 'primary.png'
+        duplicate = self.plugin.save_dir / 'derived.png'
+        PILImage.new('RGB', (20, 20), 'green').save(source)
+        duplicate.write_bytes(source.read_bytes())
+        self.event.message_str = 'apng'
+        self.event.get_messages = lambda: [self.main.Image(str(source))]
+        self.plugin._extract_all_image_urls = AsyncMock(
+            return_value=[str(source), 'https://qq.example/quoted-copy']
+        )
+        self.plugin._materialize_message_image = AsyncMock(
+            side_effect=[str(source), str(duplicate)]
+        )
+
+        self.assertEqual([x async for x in self.plugin.on_message(self.event)], [])
+
+        history = self.plugin.apng_history_store.list()['items'][0]
+        self.assertEqual(history['frame_count'], 2)
+        self.assertEqual(history['source_count'], 1)
+        self.assertFalse(duplicate.exists())
+
+    async def test_general_message_listener_runs_plain_apng_exactly_once(self):
+        self.event.message_str = 'apng'
+        response = self.event.plain_result('need image')
+        self.plugin._handle_apng = AsyncMock(return_value=response)
+        self.assertEqual([x async for x in self.plugin.on_message(self.event)], [response])
+        self.plugin._handle_apng.assert_awaited_once_with(self.event)
+
+    async def test_general_message_listener_runs_slash_apng_exactly_once(self):
+        self.event.message_str = '/apng'
+        response = self.event.plain_result('need image')
+        self.plugin._handle_apng = AsyncMock(return_value=response)
+        self.assertEqual([x async for x in self.plugin.on_message(self.event)], [response])
+        self.plugin._handle_apng.assert_awaited_once_with(self.event)
+
     async def test_cleanup_after_send_removes_apng_and_skips_history(self):
         self.config['apng_cleanup_after_send'] = True
         paths = []

@@ -361,27 +361,61 @@ class NekoDrawPlugin(Star):
             duration_ms, loop, first_duration_ms = self._parse_apng_options(event.message_str)
         except ValueError as exc:
             return event.plain_result(f"❌ {exc}")
+        # _extract_all_image_urls 会在消息链图片之后补充 AstrBot 引用解析器和
+        # 合并转发解析器的结果。记录消息链中明确出现的唯一引用数量，后续只
+        # 去除补充解析器带来的内容重复；用户明确发送的相同帧仍按原顺序保留。
+        primary_refs = list(dict.fromkeys(
+            str(ref) for ref in self._extract_image_urls(event) if str(ref).strip()
+        ))
         refs = await self._extract_all_image_urls(event)
         max_frames = int(self.conf.get("apng_maker_max_frames", 20))
         min_frames = max(1, min(max_frames, int(self.conf.get("apng_maker_min_frames", 2))))
-        if not min_frames <= len(refs) <= max_frames:
+        if not refs or len(refs) > max_frames:
             return event.plain_result(f"❌ 请提供 {min_frames}～{max_frames} 张图片")
-        if bool(self.conf.get("apng_enable_drawing_message", True)):
-            message = str(self.conf.get("apng_drawing_message", "小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱")).strip()
-            if message:
-                await event.send(event.plain_result(message))
         local_paths = []
         temporary_paths = []
-        for ref in refs:
+        seen_source_images: set[str] = set()
+        for index, ref in enumerate(refs):
             original_is_local = Path(str(ref)).is_file()
             local = await self._materialize_message_image(event, ref)
             if not local:
                 for path in temporary_paths:
                     Path(path).unlink(missing_ok=True)
                 return event.plain_result("❌ 有图片下载失败，请重新发送后再试")
+            digest = await asyncio.to_thread(image_content_digest, local)
+            is_supplemental_duplicate = (
+                index >= len(primary_refs)
+                and digest
+                and digest in seen_source_images
+            )
+            if is_supplemental_duplicate:
+                if (
+                    local not in local_paths
+                    and not original_is_local
+                    and Path(local).parent.resolve() == self.save_dir.resolve()
+                ):
+                    try:
+                        Path(local).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                logger.debug("[APNG] 已跳过补充解析器返回的重复图片: %s", str(ref)[:160])
+                continue
+            if digest:
+                seen_source_images.add(digest)
             local_paths.append(local)
             if not original_is_local and Path(local).parent.resolve() == self.save_dir.resolve():
                 temporary_paths.append(local)
+        if not min_frames <= len(local_paths) <= max_frames:
+            for path in temporary_paths:
+                Path(path).unlink(missing_ok=True)
+            return event.plain_result(f"❌ 请提供 {min_frames}～{max_frames} 张图片")
+        if bool(self.conf.get("apng_enable_drawing_message", True)):
+            message = str(self.conf.get("apng_drawing_message", "小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱")).strip()
+            if message:
+                await event.send(event.plain_result(message))
+        # 历史中的“输入原图”只表示用户本次真正提交的图片。单图 APNG
+        # 后续插入的配置首帧属于动画构造资源，不能伪装成第二张输入原图。
+        history_input_paths = list(local_paths)
         durations = [duration_ms] * len(local_paths)
         if len(local_paths) == 1:
             first_frame = self.output._resolve_apng_first_frame()
@@ -399,7 +433,9 @@ class NekoDrawPlugin(Star):
         retain_history = not bool(self.conf.get("apng_cleanup_after_send", False)) and int(self.conf.get("apng_history_limit", 200)) > 0
         try:
             if retain_history:
-                retained_sources = await asyncio.to_thread(self.output.save_history_sources, local_paths, "apng_source")
+                retained_sources = await asyncio.to_thread(
+                    self.output.save_history_sources, history_input_paths, "apng_source"
+                )
                 retained_thumbnails = await asyncio.to_thread(self.output.save_history_thumbnails, retained_sources, "input")
             output = await asyncio.to_thread(
                 self.output.make_apng, local_paths, duration_ms, loop, durations
@@ -439,15 +475,6 @@ class NekoDrawPlugin(Star):
                 except OSError:
                     pass
         return None
-
-    @filter.command("apng")
-    async def apng_command(self, event: AstrMessageEvent):
-        """将随消息发送的图片制作成 APNG。"""
-        if not self.whitelist_guard.check(event.get_sender_id(), event.get_group_id()):
-            return
-        response = await self._handle_apng(event)
-        if response is not None:
-            yield response
 
     # ---------------- Neko Config 指令组 ----------------
     @filter.command_group("nc")
@@ -608,7 +635,10 @@ class NekoDrawPlugin(Star):
         text = event.message_str.strip()
         if not text:
             return
-        if not text.startswith("/") and self._strip_command(text, ["apng"]) is not None:
+        # APNG 只在这个入口处理。AstrBot 的 command 过滤器在“回复图片 + 普通
+        # 文本 apng”场景下不一定命中；同时注册 command 和全消息监听又会在
+        # @机器人或斜杠场景执行两遍，因此统一在这里兼容有/无斜杠写法。
+        if self._strip_command(text, ["apng"]) is not None:
             if self.whitelist_guard.check(event.get_sender_id(), event.get_group_id()):
                 response = await self._handle_apng(event)
                 if response is not None:
