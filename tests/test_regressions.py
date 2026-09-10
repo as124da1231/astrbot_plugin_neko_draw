@@ -193,6 +193,13 @@ class CoreTests(unittest.TestCase):
         downloader = load('core.downloader').Downloader
         self.assertEqual(downloader._detect_image_mime(b'\x89PNG\r\n\x1a\nrest'), 'image/png')
 
+    def test_image_content_digest_deduplicates_different_paths(self):
+        digest = load('core.image_dedupe').image_content_digest
+        first, second = self.path / 'first.png', self.path / 'second.png'
+        first.write_bytes(b'same-image-content')
+        second.write_bytes(b'same-image-content')
+        self.assertEqual(digest(first), digest(second))
+
     def test_astrbot_base64_image_ref_is_supported(self):
         downloader = load('core.downloader').Downloader(self.path)
         self.assertEqual(asyncio.run(downloader.download_to_data_uri('base64://AA==')), 'data:image/png;base64,AA==')
@@ -546,6 +553,31 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             [x async for x in self.plugin.on_message(self.event)]
         self.assertFalse(self.plugin.rate_limiter.pending)
+
+    async def test_same_reference_from_two_extractors_is_uploaded_once(self):
+        first = self.plugin.save_dir / 'resolved-first.png'
+        second = self.plugin.save_dir / 'resolved-second.png'
+        PILImage.new('RGB', (8, 8), 'pink').save(first)
+        second.write_bytes(first.read_bytes())
+        self.plugin._extract_all_image_urls = AsyncMock(
+            return_value=['https://qq.example/direct', 'https://qq.example/quoted']
+        )
+        self.plugin._materialize_message_image = AsyncMock(
+            side_effect=[str(first), str(second)]
+        )
+        observed = {}
+        async def handle(_text, refs, **_kwargs):
+            observed['refs'] = list(refs)
+            observed['first_exists_during_upload'] = Path(refs[0]).exists()
+            return load('core.handler').HandlerResult(text='done', refer_image_count=1)
+        self.plugin.handler.handle = AsyncMock(side_effect=handle)
+
+        [x async for x in self.plugin.on_message(self.event)]
+
+        self.assertEqual(observed['refs'], [str(first)])
+        self.assertTrue(observed['first_exists_during_upload'])
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
 
     async def test_cancellation_releases_quota(self):
         self.plugin.handler.handle = AsyncMock(side_effect=asyncio.CancelledError())

@@ -1,4 +1,4 @@
-import { inferredProtocol, recommendedModelConfig } from "./model-profiles.js?v=2.2.3";
+import { inferredProtocol, recommendedModelConfig } from "./model-profiles.js?v=2.2.4";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];

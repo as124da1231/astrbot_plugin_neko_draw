@@ -25,6 +25,7 @@ from .core.history import HistoryStore
 from .core.apng_history import ApngHistoryStore
 from .core.forward_images import extract_forward_ids, extract_payload_images
 from .core.image_extract import extract_image_urls
+from .core.image_dedupe import image_content_digest
 from .core.prompt_manager import PromptManager
 from .core.runtime import RuntimeServices
 from .core.whitelist import WhitelistGuard
@@ -672,10 +673,28 @@ class NekoDrawPlugin(Star):
         source_local_paths = []
         source_temporary_paths = []
         prepared_image_urls = []
+        seen_source_images: set[str] = set()
         for ref in image_urls:
             original_is_local = Path(str(ref)).is_file()
             local = await self._materialize_message_image(event, ref)
             if local:
+                digest = await asyncio.to_thread(image_content_digest, local)
+                if digest and digest in seen_source_images:
+                    # 两个解析入口偶尔会命中同一个缓存文件；只有当前重复项
+                    # 是独立临时文件时才删除，不能误删首个仍要提交给模型的文件。
+                    if (
+                        local not in prepared_image_urls
+                        and not original_is_local
+                        and Path(local).parent.resolve() == self.save_dir.resolve()
+                    ):
+                        try:
+                            Path(local).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    logger.debug("[IMAGE] 已跳过重复参考图: %s", str(ref)[:160])
+                    continue
+                if digest:
+                    seen_source_images.add(digest)
                 prepared_image_urls.append(local)
                 source_local_paths.append(local)
                 if not original_is_local and Path(local).parent.resolve() == self.save_dir.resolve():

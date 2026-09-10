@@ -29,7 +29,7 @@ def main() -> None:
     html = env.get_template("index.html.j2").render(
         app_name="Neko Draw",
         plugin_name="猫娘画图",
-        version="2.2.3",
+        version="2.2.4",
         themes=(
             {"id": "forest", "name": "森林实验室", "swatch": "#63b995"},
             {"id": "atelier", "name": "奶油画室", "swatch": "#f4b83f"},
