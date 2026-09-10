@@ -107,6 +107,9 @@ def validate_config(config, schema):
     default_interval = float(result.get('apng_default_interval_seconds', 5))
     if not 0.1 <= default_interval <= 60:
         raise ValueError('APNG 默认间隔秒数必须为 0.1～60')
+    for key, label in (('drawing_history_limit', '生图历史保存上限'), ('apng_history_limit', 'APNG 历史保存上限')):
+        if int(result.get(key, 200)) < 0:
+            raise ValueError(f'{label}不能小于 0')
 
     # v2 将提供商、模型和模型参数放在同一层。先校验权威结构，再投影给稳定运行时。
     integrated = result.get('image_providers')
@@ -117,6 +120,7 @@ def validate_config(config, schema):
             if not isinstance(provider, dict):
                 raise ValueError(f'模型提供商[{p_index + 1}]格式无效')
             name = str(provider.get('name', '')).strip()
+            provider.pop('protocol', None)
             if not name:
                 raise ValueError(f'模型提供商[{p_index + 1}]名称不能为空')
             integrated_names.append(name)

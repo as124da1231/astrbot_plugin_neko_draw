@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>猫娘画图 控制台</title>
-  <link rel="stylesheet" href="./assets/style.css?v=1.9.1">
+  <link rel="stylesheet" href="./assets/style.css?v=2.2.0">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -45,7 +45,7 @@
   <svg class="icon icon-sparkles" width="19" height="19" aria-hidden="true"><use href="#i-sparkles"></use></svg><span>APNG 作品</span><span class="nav-index">04</span>
 </button>
       </nav>
-      <div class="sidebar-note"><span class="live-dot"></span><div><strong>猫娘画图</strong><small>已连接 · v1.9.1</small></div></div>
+      <div class="sidebar-note"><span class="live-dot"></span><div><strong>猫娘画图</strong><small>已连接 · v2.2.0</small></div></div>
     </aside>
     <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="关闭菜单"></button>
 
@@ -99,10 +99,10 @@
         </section>
 
         <section class="page" id="page-apng" data-title="APNG 作品">
-          <div class="hero"><div><span class="eyebrow">IMAGE LAB / APNG</span><h1>每一帧，<em>都留在这里。</em></h1><p>查看、下载或删除由 apng 指令制作的动画，与 AI 生成历史完全分开。</p></div><div class="hero-number">04</div></div>
+          <div class="hero"><div><span class="eyebrow">IMAGE LAB / APNG</span><h1>只留原图，<em>成品不落盘。</em></h1><p>查看制作 APNG 时使用的多张原图；动画成品在发送完成后自动清理。</p></div><div class="hero-number">04</div></div>
           <div class="panel history-panel">
             <div class="panel-title"><div><span class="section-index">04—A</span><h2>APNG 制作记录</h2><span class="count-pill" id="apng-count">0 条</span></div><div class="panel-actions"><button class="icon-button" id="refresh-apng" title="刷新"><svg class="icon icon-refresh" width="20" height="20" aria-hidden="true"><use href="#i-refresh"></use></svg></button><button class="danger-button" id="clear-apng"><svg class="icon icon-trash" width="16" height="16" aria-hidden="true"><use href="#i-trash"></use></svg>清空作品</button></div></div>
-            <div class="table-wrap"><table class="apng-table"><thead><tr><th>时间 / ID</th><th>帧数</th><th>每帧间隔</th><th>循环</th><th>文件大小</th><th class="right">操作</th></tr></thead><tbody id="apng-body"></tbody></table><div class="empty-state" id="apng-empty"><div class="empty-orbit"><svg class="icon icon-sparkles" width="28" height="28" aria-hidden="true"><use href="#i-sparkles"></use></svg></div><h3>还没有 APNG 作品</h3><p>发送 apng 指令制作动画后，会显示在这里。</p></div></div>
+            <div class="table-wrap"><table class="apng-table"><thead><tr><th>时间 / ID</th><th>帧数</th><th>每帧间隔</th><th>循环</th><th>原图数量</th><th class="right">操作</th></tr></thead><tbody id="apng-body"></tbody></table><div class="empty-state" id="apng-empty"><div class="empty-orbit"><svg class="icon icon-sparkles" width="28" height="28" aria-hidden="true"><use href="#i-sparkles"></use></svg></div><h3>还没有 APNG 记录</h3><p>成品发送后自动清理；这里仅保存制作记录和输入原图。</p></div></div>
             <div class="pagination"><span id="apng-page-summary">第 1 页</span><div><button class="soft-button" id="apng-prev">上一页</button><button class="soft-button" id="apng-next">下一页</button></div></div>
           </div>
         </section>
@@ -130,6 +130,6 @@
   <dialog class="modal" id="detail-modal"><button class="modal-close" data-close-modal aria-label="关闭"><svg class="icon icon-close" width="20" height="20" aria-hidden="true"><use href="#i-close"></use></svg></button><div id="detail-content"></div></dialog>
   <dialog class="modal confirm-modal" id="confirm-modal"><div class="confirm-icon">!</div><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="modal-actions"><button class="soft-button" data-confirm="cancel">取消</button><button class="danger-button" data-confirm="ok">确认</button></div></dialog>
   <input type="file" id="file-picker" hidden>
-  <script type="module" src="./assets/app.js?v=1.9.1"></script>
+  <script type="module" src="./assets/app.js?v=2.2.0"></script>
 </body>
 </html>

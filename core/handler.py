@@ -224,15 +224,21 @@ class DrawingHandler:
         try:
             output_urls = await provider_client.generate(template.model, payload)
         except (WavespeedError, RunningHubError, OpenAPIError) as e:
+            detail = str(e)
+            if "超时" in detail or "timeout" in detail.lower():
+                detail = "小猫/ᐠ - ˕ -マ Ⳋ提醒你"
             return self._result_with_meta(
                 parsed, template, refer_uris,
-                text=f"图片生成失败：{e}",
+                text=detail if detail.startswith("小猫/") else f"图片生成失败：{detail}",
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("生成过程异常")
+            detail = str(e)
+            if isinstance(e, TimeoutError) or "超时" in detail or "timeout" in detail.lower():
+                detail = "小猫/ᐠ - ˕ -マ Ⳋ提醒你"
             return self._result_with_meta(
                 parsed, template, refer_uris,
-                text=f"图片生成异常：{e}",
+                text=detail if detail.startswith("小猫/") else f"图片生成异常：{detail}",
             )
 
         # 7. 下载结果

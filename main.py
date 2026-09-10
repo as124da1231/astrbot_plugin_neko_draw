@@ -42,8 +42,13 @@ class NekoDrawPlugin(Star):
         self.context = context
         self.conf = config
         # 仅迁移旧版内置默认文案；用户填写的其他自定义内容保持不变。
-        if self.conf.get("drawing_message") == "🐱 猫娘正在画图，请稍候...":
-            self.conf["drawing_message"] = "小猫正在搓屏幕中"
+        drawing_notice = "小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱"
+        if self.conf.get("drawing_message") in {
+            "🐱 猫娘正在画图，请稍候...", "小猫正在搓屏幕中"
+        }:
+            self.conf["drawing_message"] = drawing_notice
+        if self.conf.get("apng_drawing_message") == "🐱 猫娘正在制作 APNG，请稍候...":
+            self.conf["apng_drawing_message"] = drawing_notice
 
         # 数据目录
         self.data_dir = StarTools.get_data_dir(PLUGIN_DATA_DIR)
@@ -122,6 +127,8 @@ class NekoDrawPlugin(Star):
         self._runtime = new_runtime
         self._install_runtime(new_runtime)
         await old_runtime.close()
+        await asyncio.to_thread(self.history_store.enforce_limit, max(0, int(self.conf.get("drawing_history_limit", 200))))
+        await asyncio.to_thread(self.apng_history_store.enforce_limit, max(0, int(self.conf.get("apng_history_limit", 200))))
 
 
     # ---------------- 工具 ----------------
@@ -296,7 +303,7 @@ class NekoDrawPlugin(Star):
         if not min_frames <= len(refs) <= max_frames:
             return event.plain_result(f"❌ 请提供 {min_frames}～{max_frames} 张图片")
         if bool(self.conf.get("apng_enable_drawing_message", True)):
-            message = str(self.conf.get("apng_drawing_message", "")).strip()
+            message = str(self.conf.get("apng_drawing_message", "小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱")).strip()
             if message:
                 await event.send(event.plain_result(message))
         local_paths = []
@@ -321,17 +328,20 @@ class NekoDrawPlugin(Star):
             durations.insert(0, first_duration_ms)
         elif durations:
             durations[0] = first_duration_ms
+        output = ""
+        retained_sources = []
+        retained_thumbnails = []
+        retain_history = not bool(self.conf.get("apng_cleanup_after_send", False)) and int(self.conf.get("apng_history_limit", 200)) > 0
         try:
+            if retain_history:
+                retained_sources = await asyncio.to_thread(self.output.save_history_sources, local_paths, "apng_source")
+                retained_thumbnails = await asyncio.to_thread(self.output.save_history_thumbnails, retained_sources, "input")
             output = await asyncio.to_thread(
                 self.output.make_apng, local_paths, duration_ms, loop, durations
             )
+            output_size = Path(output).stat().st_size if Path(output).is_file() else 0
             await self._send_apng_file(event, output)
-            if bool(self.conf.get("apng_cleanup_after_send", False)):
-                try:
-                    Path(output).unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("[neko_draw] APNG 发送后清理失败: %s", output)
-            else:
+            if retain_history:
                 try:
                     self.apng_history_store.add(
                         user_id=event.get_sender_id(),
@@ -339,14 +349,25 @@ class NekoDrawPlugin(Star):
                         frame_count=len(local_paths),
                         duration_ms=duration_ms,
                         loop=loop,
-                        file_path=output,
+                        file_size=output_size,
+                        source_image_paths=retained_sources,
+                        source_thumbnail_paths=retained_thumbnails,
                     )
+                    self.apng_history_store.enforce_limit(int(self.conf.get("apng_history_limit", 200)))
+                    retained_sources = []
+                    retained_thumbnails = []
                 except Exception:  # noqa: BLE001
                     logger.warning("[neko_draw] APNG 记录写入失败", exc_info=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[neko_draw] APNG 制作失败", exc_info=True)
             return event.plain_result(f"❌ APNG 制作失败：{exc}")
         finally:
+            if output:
+                try:
+                    Path(output).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("[neko_draw] APNG 成品清理失败: %s", output)
+            self.output.cleanup_history_assets(retained_sources + retained_thumbnails)
             for path in temporary_paths:
                 try:
                     Path(path).unlink(missing_ok=True)
@@ -562,7 +583,7 @@ class NekoDrawPlugin(Star):
                 return
             if not self.conf.get("enable_drawing_message", True):
                 return
-            msg = str(self.conf.get("drawing_message", "")).strip()
+            msg = str(self.conf.get("drawing_message", "小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱")).strip()
             if msg:
                 await event.send(event.plain_result(msg))
 
@@ -601,6 +622,9 @@ class NekoDrawPlugin(Star):
         _gen_start = time.time()
         result = None
         source_history_paths = []
+        source_thumbnail_paths = []
+        output_thumbnail_paths = []
+        retain_history = not bool(self.conf.get("drawing_cleanup_after_send", False)) and int(self.conf.get("drawing_history_limit", 200)) > 0
         try:
             result = await self.handler.handle(
                 text,
@@ -609,10 +633,11 @@ class NekoDrawPlugin(Star):
                 group_id=event.get_group_id(),
                 progress_cb=_progress,
             )
-            if result and result.refer_image_count and source_local_paths:
+            if retain_history and result and result.refer_image_count and source_local_paths:
                 source_history_paths = await asyncio.to_thread(
                     self.output.save_history_sources, source_local_paths
                 )
+                source_thumbnail_paths = await asyncio.to_thread(self.output.save_history_thumbnails, source_history_paths, "input")
         finally:
             self.rate_limiter.finish(reservation, bool(result and result.images))
             for path in source_temporary_paths:
@@ -626,8 +651,11 @@ class NekoDrawPlugin(Star):
             return
 
         # 记录生成历史（成功和失败都记，静默忽略的不记）
-        if result.model_template:
+        history_saved = False
+        if retain_history and result.model_template:
             try:
+                if result.images:
+                    output_thumbnail_paths = await asyncio.to_thread(self.output.save_history_thumbnails, result.images, "output")
                 self.history_store.add(
                     user_id=event.get_sender_id(),
                     group_id=event.get_group_id() or "",
@@ -642,10 +670,15 @@ class NekoDrawPlugin(Star):
                     error_message="" if result.images else result.text,
                     image_paths=result.images,
                     source_image_paths=source_history_paths,
+                    image_thumbnail_paths=output_thumbnail_paths,
+                    source_thumbnail_paths=source_thumbnail_paths,
                     generation_time_ms=_gen_ms,
                 )
+                self.history_store.enforce_limit(int(self.conf.get("drawing_history_limit", 200)))
+                history_saved = True
             except Exception:  # noqa: BLE001
                 logger.warning("[neko_draw] 历史记录写入失败", exc_info=True)
+                self.output.cleanup_history_assets(source_history_paths + source_thumbnail_paths + output_thumbnail_paths)
 
         if result.images:
             # 生成成功，记录限流使用（失败不扣次数）
@@ -692,6 +725,8 @@ class NekoDrawPlugin(Star):
                 await asyncio.to_thread(
                     self.output.cleanup_transient_apngs, result_images, result.images
                 )
+                if not history_saved:
+                    await asyncio.to_thread(self.output.cleanup_generated_images, result.images)
         elif result.text:
             yield event.plain_result(result.text)
 

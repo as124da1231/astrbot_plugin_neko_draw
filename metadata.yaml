@@ -1,8 +1,8 @@
 name: astrbot_plugin_neko_draw
 display_name: 猫娘画图
 short_desc: 支持 QQ 聊天记录取图、APNG 制作与首帧展示的多提供商 AI 画图插件。
-desc: 支持从 QQ 合并转发聊天记录取图并制作 APNG，可管理服务器 APNG 文件与编辑原图；支持 WaveSpeed、RunningHub、OpenAI 兼容及 AstrBot 已有模型提供商、生成历史与多主题 WebUI。
-version: 1.9.1
+desc: 支持从 QQ 合并转发聊天记录取图并制作 APNG，提供多图原图与生成图历史、缩略图及完整清理；支持 WaveSpeed、RunningHub、OpenAI 兼容及 AstrBot 已有模型提供商与多主题 WebUI。
+version: 2.2.0
 author: as124da1231
 astrbot_version: ">=4.24.1"
 repo: https://github.com/as124da1231/astrbot_plugin_neko_draw

@@ -85,6 +85,11 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(key, 'secret-from-astrbot')
         self.assertEqual(base_url, 'https://api.wavespeed.ai/api/v3')
 
+    def test_image_protocol_is_inferred_only_from_url(self):
+        self.assertEqual(provider_factory.infer_provider_type('https://api.wavespeed.ai/api/v3'), 'wavespeed')
+        self.assertEqual(provider_factory.infer_provider_type('https://www.runninghub.cn/openapi/v2'), 'runninghub')
+        self.assertEqual(provider_factory.infer_provider_type('https://api.siliconflow.cn/v1'), 'openai')
+
     def test_default_fallback_uses_lowest_number_and_matching_mode(self):
         manager = templates.TemplateManager([
             {'name': 'text-late', 'model': 'a', 'fallback_order': 20, 'enabled_as_default': True},
@@ -106,6 +111,20 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(config['model_providers'][2]['api_key'], 'open-key')
         self.assertEqual(config['model_templates'][0]['provider'], 'OpenAI')
         self.assertEqual(config['image_providers'][2]['models'][0]['name'], 'legacy')
+
+    def test_fresh_install_has_no_default_provider_or_model(self):
+        schema = json.loads((ROOT / '_conf_schema.json').read_text(encoding='utf-8'))
+        self.assertNotIn('model_providers', schema)
+        self.assertNotIn('model_templates', schema)
+        self.assertNotIn('default_text_model', schema)
+        self.assertNotIn('default_edit_model', schema)
+        self.assertEqual(schema['image_providers']['default'], [])
+        self.assertEqual(schema['default_text_model_v2']['default'], '')
+        self.assertEqual(schema['default_edit_model_v2']['default'], '')
+        config = {}
+        provider_factory.ensure_provider_config(config)
+        self.assertEqual(config['model_providers'], [])
+        self.assertEqual(config.get('image_providers', []), [])
 
     def test_integrated_provider_projects_to_runtime(self):
         config = {
@@ -264,12 +283,15 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn('config-actions-toggle', template)
         self.assertIn('aria-label="重新加载配置"', template)
         self.assertIn('aria-label="保存并重载"', template)
-        self.assertIn('正在读取原始生成图', script)
+        self.assertIn('正在读取原图', script)
         self.assertIn('下载原图', script)
         self.assertIn('style.css?v={{ version }}', template)
         self.assertIn('app.js?v={{ version }}', template)
         self.assertNotIn('sidebar-config-actions', template)
         self.assertNotIn('界面风格仅在本次打开期间生效', script)
+        self.assertNotIn('setting("图像接口协议"', script)
+        self.assertIn('已自动识别：', script)
+        self.assertIn('WaveSpeed 模型需要自定义添加', script)
         root_theme = styles.split('html[data-theme="atelier"]', 1)[0]
         self.assertIn('--accent: #4da47c', root_theme)
         self.assertIn('html[data-theme="atelier"]', styles)
@@ -278,6 +300,10 @@ class CoreTests(unittest.TestCase):
         self.assertIn('providers/test', script)
         self.assertIn('providers/models', script)
         self.assertIn('models/test', script)
+        self.assertIn('recommendedModelConfig', script)
+        self.assertIn('恢复推荐参数', script)
+        self.assertIn('首次添加时自动填入，之后可自由增删修改', script)
+        self.assertIn('.model-recommendation', styles)
 
     def test_rate_limiter_reconfigure_preserves_usage(self):
         limiter = RateLimiter({'enable_rate_limit': True, 'rate_limit_rules': [
@@ -354,6 +380,41 @@ class CoreTests(unittest.TestCase):
         record_id = store.add(status='success', source_image_paths=['source.png'])
         self.assertEqual(store.get(record_id)['source_image_paths'], ['source.png'])
 
+    def test_generation_history_delete_removes_all_managed_assets(self):
+        save = self.path / 'save_images'; inputs = self.path / 'history_inputs'; thumbs = self.path / 'history_thumbnails'
+        for folder in (save, inputs, thumbs): folder.mkdir()
+        output = save / 'img_result.png'; source = inputs / 'source_input.png'
+        output_thumb = thumbs / 'thumb_output.webp'; source_thumb = thumbs / 'thumb_input.webp'
+        for path in (output, source, output_thumb, source_thumb): path.write_bytes(b'x')
+        store = load('core.history').HistoryStore(self.path)
+        record = store.add(status='success', image_paths=[str(output)], source_image_paths=[str(source)], image_thumbnail_paths=[str(output_thumb)], source_thumbnail_paths=[str(source_thumb)])
+        self.assertEqual(store.get(record)['image_thumbnail_paths'], [str(output_thumb)])
+        self.assertTrue(store.delete(record))
+        self.assertTrue(all(not path.exists() for path in (output, source, output_thumb, source_thumb)))
+
+    def test_separate_history_limits_remove_oldest_assets(self):
+        save = self.path / 'save_images'; save.mkdir()
+        store = load('core.history').HistoryStore(self.path)
+        paths = []
+        for index in range(3):
+            path = save / f'img_{index}.png'; path.write_bytes(b'x'); paths.append(path)
+            store.add(status='success', image_paths=[str(path)])
+        self.assertEqual(store.enforce_limit(1), 2)
+        self.assertEqual(store.list()['total'], 1)
+        self.assertFalse(paths[0].exists()); self.assertFalse(paths[1].exists()); self.assertTrue(paths[2].exists())
+
+    def test_apng_history_keeps_only_sources_and_limit_cleans_them(self):
+        inputs = self.path / 'history_inputs'; thumbs = self.path / 'history_thumbnails'; inputs.mkdir(); thumbs.mkdir()
+        store = load('core.apng_history').ApngHistoryStore(self.path)
+        sources = []
+        for index in range(2):
+            source = inputs / f'apng_source_{index}.png'; thumb = thumbs / f'thumb_{index}.webp'; source.write_bytes(b'x'); thumb.write_bytes(b'x'); sources.append((source, thumb))
+            store.add(user_id='1', group_id='', frame_count=2, duration_ms=5000, loop=0, source_image_paths=[str(source)], source_thumbnail_paths=[str(thumb)])
+        self.assertEqual(store.enforce_limit(1), 1)
+        self.assertFalse(sources[0][0].exists()); self.assertFalse(sources[0][1].exists()); self.assertTrue(sources[1][0].exists())
+        item = store.list()['items'][0]
+        self.assertEqual(item['file_path'], ''); self.assertEqual(item['source_count'], 1)
+
 
 def install_astrbot_stubs():
     # Only the host boundary is mocked; plugin business code runs unchanged.
@@ -422,7 +483,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         config = Config(self.config)
         config['drawing_message'] = '🐱 猫娘正在画图，请稍候...'
         plugin = self.main.NekoDrawPlugin(self.context, config)
-        self.assertEqual(plugin.conf['drawing_message'], '小猫正在搓屏幕中')
+        self.assertEqual(plugin.conf['drawing_message'], '小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱')
 
     async def test_generation_exception_releases_quota(self):
         self.plugin.handler.handle = AsyncMock(side_effect=RuntimeError('test'))
@@ -531,15 +592,16 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             paths.append(path)
         self.event.message_str = 'apng 4'
         self.event.get_messages = lambda: [Image(str(path)) for path in paths]
+        observed = {}
+        async def inspect_send(message):
+            if isinstance(message, list) and message and hasattr(message[0], 'value'):
+                with PILImage.open(message[0].value) as img:
+                    observed['frames'] = img.n_frames; observed['first'] = img.info['duration']; img.seek(1); observed['second'] = img.info['duration']
+        self.event.send.side_effect = inspect_send
         outputs = [x async for x in self.plugin.on_message(self.event)]
         self.assertEqual(outputs, [])
-        sent = self.event.send.await_args.args[0]
-        with PILImage.open(sent[0].value) as img:
-            self.assertEqual(img.n_frames, 3)
-            self.assertEqual(img.info['duration'], 100.0)
-            img.seek(1)
-            self.assertEqual(img.info['duration'], 4000.0)
-        self.assertIn('猫娘正在制作 APNG', self.event.send.await_args_list[0].args[0])
+        self.assertEqual(observed, {'frames': 3, 'first': 100.0, 'second': 4000.0})
+        self.assertIn('小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱', self.event.send.await_args_list[0].args[0])
 
     async def test_apng_progress_message_can_be_disabled(self):
         self.config['apng_enable_drawing_message'] = False
@@ -558,12 +620,14 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         source = self.path / 'single.png'; PILImage.new('RGB', (20, 20), 'red').save(source)
         self.event.message_str = 'apng 4'
         self.event.get_messages = lambda: [self.main.Image(str(source))]
+        observed = {}
+        async def inspect_send(message):
+            if isinstance(message, list) and message and hasattr(message[0], 'value'):
+                with PILImage.open(message[0].value) as img:
+                    observed['frames'] = img.n_frames; observed['first'] = img.info['duration']; img.seek(1); observed['second'] = img.info['duration']
+        self.event.send.side_effect = inspect_send
         [x async for x in self.plugin.on_message(self.event)]
-        sent = self.event.send.await_args.args[0]
-        with PILImage.open(sent[0].value) as img:
-            self.assertEqual(img.n_frames, 2)
-            self.assertEqual(img.info['duration'], 100.0)
-            img.seek(1); self.assertEqual(img.info['duration'], 4000.0)
+        self.assertEqual(observed, {'frames': 2, 'first': 100.0, 'second': 4000.0})
 
     async def test_cleanup_after_send_removes_apng_and_skips_history(self):
         self.config['apng_cleanup_after_send'] = True

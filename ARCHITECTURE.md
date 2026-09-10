@@ -18,8 +18,8 @@
 
 ## 数据层
 
-- `core/history.py`：AI 图片生成历史与原图查看。
-- `core/apng_history.py`：独立的 APNG 作品记录、下载和删除。
+- `core/history.py`：AI 生图记录及输入原图、生成图、缩略图的统一生命周期和容量上限。
+- `core/apng_history.py`：仅保留 APNG 输入原图与缩略图；成品发送后始终清理。
 - `core/storage.py`、`core/uploads.py`：安全、原子的配置数据及上传文件处理。
 
 ## 配置生效规则

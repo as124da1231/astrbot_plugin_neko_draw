@@ -34,6 +34,7 @@ const CATEGORIES = [
     ["生图外显金句", ["enable_image_summary", "image_summary_quotes", "image_summary_quotes_files"]],
     ["生图合并转发", ["enable_forward_message", "forward_node_name", "enable_at_sender"]],
     ["生图默认首帧", ["enable_apng_wrap", "drawing_first_frame_path", "drawing_first_frame_duration", "drawing_second_frame_duration", "drawing_apng_loop", "drawing_apng_optimize"]],
+    ["生图历史与清理", ["drawing_cleanup_after_send", "drawing_history_limit"]],
   ]},
   { key: "apng", title: "APNG 设置", description: "独立管理 APNG 指令的金句、转发方式、默认首帧、制作限制和文件清理。", groups: [
     ["生成中提示", ["apng_enable_drawing_message", "apng_drawing_message"]],
@@ -41,7 +42,8 @@ const CATEGORIES = [
     ["APNG 合并转发", ["apng_enable_forward_message", "apng_forward_node_name", "apng_enable_at_sender"]],
     ["APNG 默认首帧", ["apng_first_frame_path", "apng_first_frame_duration"]],
     ["动画播放与优化", ["apng_default_interval_seconds", "apng_loop", "apng_optimize"]],
-    ["多图指令制作", ["apng_maker_min_frames", "apng_maker_max_frames", "apng_maker_max_dimension", "apng_cleanup_after_send"]],
+    ["多图指令制作", ["apng_maker_min_frames", "apng_maker_max_frames", "apng_maker_max_dimension"]],
+    ["APNG 历史与清理", ["apng_cleanup_after_send", "apng_history_limit"]],
   ]},
   { key: "limit", title: "限流与白名单", description: "限流按用户维度统计并支持多规则；启用插件白名单后，仅名单中的用户或群组可使用绘图。", groups: [
     ["限流设置", ["enable_rate_limit", "rate_limit_rules", "rate_limit_whitelist", "rate_limit_message"]],
@@ -58,6 +60,13 @@ const PROVIDER_DEFAULT_URLS = {
   OpenAI: "https://api.openai.com/v1",
   AstrBot: "",
 };
+
+function inferredProtocol(url = "") {
+  const value = String(url).toLowerCase();
+  if (value.includes("wavespeed.ai") || value.includes("/api/v3")) return "WaveSpeed";
+  if (value.includes("runninghub.cn") || value.includes("/openapi/v2")) return "RunningHub";
+  return "OpenAI";
+}
 
 function toast(message, type = "success") {
   let stack = $(".toast-stack");
@@ -195,13 +204,13 @@ function extensionForMime(mime = "") {
   return { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" }[mime] || "png";
 }
 
-async function downloadHistoryImage(item, index = 0) {
+async function downloadAsset(endpoint, filename) {
   try {
-    const result = await apiGet(`history/image/${item.id}/${index}`);
+    const result = await apiGet(endpoint);
     if (!result?.data_url) throw new Error("图片数据为空");
     const link = document.createElement("a");
     link.href = result.data_url;
-    link.download = `neko-draw-${item.id}-${index + 1}.${extensionForMime(result.mime)}`;
+    link.download = `${filename}.${extensionForMime(result.mime)}`;
     link.hidden = true;
     document.body.append(link);
     link.click();
@@ -209,6 +218,37 @@ async function downloadHistoryImage(item, index = 0) {
     toast("图片下载已开始");
   } catch (error) {
     toast(`下载失败：${error.message}`, "error");
+  }
+}
+
+async function downloadHistoryImage(item, index = 0) {
+  return downloadAsset(`history/image/${item.id}/${index}`, `neko-draw-${item.id}-output-${index + 1}`);
+}
+
+async function openFullAsset(endpoint, title, filename, allowDownload = true) {
+  const dialog = makeDialog("modal asset-viewer");
+  dialog.innerHTML = `<button class="modal-close" aria-label="关闭">${icon("close")}</button><div class="detail-layout"><h2></h2><div class="detail-image loading-card"><span class="spinner"></span>正在读取原图…</div></div>`;
+  $("h2", dialog).textContent = title;
+  $(".modal-close", dialog).addEventListener("click", () => dialog.close()); dialog.showModal();
+  try {
+    const result = await apiGet(endpoint); const wrap = document.createElement("div"); wrap.className = "detail-preview";
+    const image = new Image(); image.className = "detail-image"; image.src = result.data_url; image.alt = title;
+    wrap.append(image);
+    if (allowDownload) { const button = document.createElement("button"); button.className = "primary-button detail-download"; button.innerHTML = `${icon("download",17)}下载原图`; button.addEventListener("click", () => downloadAsset(endpoint, filename)); wrap.append(button); }
+    $(".detail-image", dialog).replaceWith(wrap);
+  } catch (error) { $(".detail-image", dialog).textContent = `原图读取失败：${error.message}`; }
+}
+
+function renderAssetGallery(root, item, kind, count, routeBase, thumbBase, label, allowDownload = true) {
+  if (!count) return;
+  const section = document.createElement("section"); section.className = "asset-section";
+  section.innerHTML = `<h3>${label} <small>${count} 张</small></h3><div class="asset-gallery"></div>`; root.append(section);
+  const gallery = $(".asset-gallery", section);
+  for (let index = 0; index < count; index += 1) {
+    const button = document.createElement("button"); button.className = "asset-thumb-button"; button.innerHTML = `<span class="spinner"></span><span>${index + 1}</span>`;
+    button.addEventListener("click", () => openFullAsset(`${routeBase}/${item.id}/${index}`, `${label} ${index + 1}`, `neko-draw-${item.id}-${kind}-${index + 1}`, allowDownload)); gallery.append(button);
+    const thumbEndpoint = thumbBase === "history/thumbnail" ? `${thumbBase}/${item.id}/${kind}/${index}` : `${thumbBase}/${item.id}/${index}`;
+    apiGet(thumbEndpoint).then(result => { const image = new Image(); image.className="asset-thumb"; image.src=result.data_url; image.alt=`${label}缩略图 ${index+1}`; button.replaceChildren(image); }).catch(() => { button.classList.add("no-thumb"); button.textContent=`${index+1} · 点击读取`; });
   }
 }
 
@@ -220,9 +260,12 @@ function renderHistory() {
   state.history.forEach(item => {
     const row = document.createElement("tr");
     const timeCell = document.createElement("td");
-    timeCell.innerHTML = `<span class="cell-main"></span><small class="cell-sub"></small>`;
+    timeCell.innerHTML = `<div class="history-record-cell"><span class="history-cover">${icon("image",16)}</span><span><span class="cell-main"></span><small class="cell-sub"></small></span></div>`;
     $(".cell-main", timeCell).textContent = formatTime(item.timestamp);
     $(".cell-sub", timeCell).textContent = `#${item.id} · 用户 ${text(item.user_id)}`;
+    const outputCover = (item.image_thumbnail_paths || []).findIndex(Boolean); const inputCover = (item.source_thumbnail_paths || []).findIndex(Boolean);
+    const coverKind = outputCover >= 0 ? "output" : (inputCover >= 0 ? "input" : ""); const coverIndex = outputCover >= 0 ? outputCover : inputCover;
+    if (coverKind) apiGet(`history/thumbnail/${item.id}/${coverKind}/${coverIndex}`).then(result => { const img=new Image(); img.src=result.data_url; img.alt="记录缩略图"; $(".history-cover",timeCell).replaceChildren(img); }).catch(()=>{});
 
     const promptCell = document.createElement("td");
     promptCell.innerHTML = `<span class="cell-main"></span><small class="cell-sub"></small>`;
@@ -302,7 +345,7 @@ function makeDialog(className = "modal") {
 
 async function openHistoryDetail(item) {
   const dialog = makeDialog("modal");
-  dialog.innerHTML = `<button class="modal-close" aria-label="关闭">${icon("close")}</button><div class="detail-layout"><h2>生成记录 #${item.id}</h2><div class="detail-image loading-card"><span class="spinner"></span>正在读取原始生成图…</div><div class="detail-grid"></div></div>`;
+  dialog.innerHTML = `<button class="modal-close" aria-label="关闭">${icon("close")}</button><div class="detail-layout"><h2>生成记录 #${item.id}</h2><div class="detail-grid"></div></div>`;
   $(".modal-close", dialog).addEventListener("click", () => dialog.close());
   const grid = $(".detail-grid", dialog);
   const details = [
@@ -319,31 +362,10 @@ async function openHistoryDetail(item) {
     node.append(name, content); grid.append(node);
   });
   dialog.showModal();
-  const imageBox = $(".detail-image", dialog);
-  if (item.status === "success" && (item.image_paths || []).length) {
-    try {
-      const result = await apiGet(`history/image/${item.id}/0`);
-      const imageWrap = document.createElement("div"); imageWrap.className = "detail-preview";
-      const image = new Image(); image.className = "detail-image"; image.alt = `原始生成图 ${item.id}`; image.src = result.data_url;
-      const download = document.createElement("button"); download.type = "button"; download.className = "primary-button detail-download"; download.innerHTML = `${icon("download", 17)}下载原图`;
-      download.addEventListener("click", () => downloadHistoryImage(item));
-      imageWrap.append(image, download); imageBox.replaceWith(imageWrap);
-    } catch { imageBox.textContent = "图片暂时无法读取"; }
-  } else { imageBox.textContent = item.error_message || "此记录没有图片"; }
-  if ((item.source_image_paths || []).length) {
-    const section = document.createElement("section");
-    section.className = "source-section";
-    section.innerHTML = `<h3>编辑原图</h3><div class="source-gallery"></div>`;
-    $(".detail-layout", dialog).append(section);
-    const gallery = $(".source-gallery", section);
-    await Promise.all(item.source_image_paths.map(async (_path, index) => {
-      try {
-        const result = await apiGet(`history/source/${item.id}/${index}`);
-        const image = new Image(); image.src = result.data_url; image.alt = `编辑原图 ${index + 1}`;
-        gallery.append(image);
-      } catch { /* 单张失效不影响其他原图 */ }
-    }));
-  }
+  const root = $(".detail-layout", dialog);
+  renderAssetGallery(root, item, "input", (item.source_image_paths || []).length, "history/source", "history/thumbnail", "输入原图");
+  renderAssetGallery(root, item, "output", (item.image_paths || []).length, "history/image", "history/thumbnail", "生成图片");
+  if (!(item.image_paths || []).length && !(item.source_image_paths || []).length) { const note=document.createElement("p"); note.className="empty-note"; note.textContent=item.error_message||"此记录没有图片"; root.append(note); }
 }
 
 function formatBytes(bytes) {
@@ -353,26 +375,11 @@ function formatBytes(bytes) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-async function downloadApng(item) {
-  try {
-    const result = await apiGet(`apng-history/image/${item.id}`);
-    const link = document.createElement("a"); link.href = result.data_url;
-    link.download = `neko-draw-apng-${item.id}.png`; link.hidden = true;
-    document.body.append(link); link.click(); link.remove(); toast("APNG 下载已开始");
-  } catch (error) { toast(`下载失败：${error.message}`, "error"); }
-}
-
 async function viewApng(item) {
   const dialog = makeDialog("modal");
-  dialog.innerHTML = `<button class="modal-close">${icon("close")}</button><div class="detail-layout"><h2>APNG 作品 #${item.id}</h2><div class="detail-image loading-card"><span class="spinner"></span>正在读取动画…</div><div class="detail-grid"><div class="detail-item"><span>帧数</span><strong>${item.frame_count}</strong></div><div class="detail-item"><span>间隔</span><strong>${formatDuration(item.duration_ms)}</strong></div><div class="detail-item"><span>循环</span><strong>${Number(item.loop) === 0 ? "无限" : item.loop + " 次"}</strong></div><div class="detail-item"><span>制作时间</span><strong>${formatTime(item.timestamp)}</strong></div></div></div>`;
+  dialog.innerHTML = `<button class="modal-close">${icon("close")}</button><div class="detail-layout"><h2>APNG 记录 #${item.id}</h2><p class="cleanup-note">APNG 成品发送后已自动清理；这里只保留制作时的输入原图。</p><div class="detail-grid"><div class="detail-item"><span>帧数</span><strong>${item.frame_count}</strong></div><div class="detail-item"><span>间隔</span><strong>${formatDuration(item.duration_ms)}</strong></div><div class="detail-item"><span>循环</span><strong>${Number(item.loop) === 0 ? "无限" : item.loop + " 次"}</strong></div><div class="detail-item"><span>制作时间</span><strong>${formatTime(item.timestamp)}</strong></div></div></div>`;
   $(".modal-close", dialog).addEventListener("click", () => dialog.close()); dialog.showModal();
-  try {
-    const result = await apiGet(`apng-history/image/${item.id}`);
-    const wrap = document.createElement("div"); wrap.className = "detail-preview";
-    const image = new Image(); image.className = "detail-image"; image.src = result.data_url; image.alt = `APNG ${item.id}`;
-    const download = document.createElement("button"); download.className = "primary-button detail-download"; download.innerHTML = `${icon("download", 17)}下载 APNG`; download.addEventListener("click", () => downloadApng(item));
-    wrap.append(image, download); $(".detail-image", dialog).replaceWith(wrap);
-  } catch { $(".detail-image", dialog).textContent = "动画文件已不存在"; }
+  renderAssetGallery($(".detail-layout",dialog), item, "input", Number(item.source_count||0), "apng-history/source", "apng-history/thumbnail", "输入原图", false);
 }
 
 function renderApngHistory() {
@@ -381,12 +388,13 @@ function renderApngHistory() {
   $("#apng-empty").classList.toggle("is-visible", state.apngHistory.length === 0);
   state.apngHistory.forEach(item => {
     const row = document.createElement("tr");
-    row.innerHTML = `<td><span class="cell-main"></span><small class="cell-sub"></small></td><td>${item.frame_count} 帧</td><td>${formatDuration(item.duration_ms)}</td><td>${Number(item.loop) === 0 ? "无限" : item.loop + " 次"}</td><td>${formatBytes(item.file_size)}</td><td class="right"><div class="row-actions"><button class="view-row" title="查看">${icon("eye")}</button><button class="download-row" title="下载">${icon("download")}</button><button class="delete-row" title="删除">${icon("trash")}</button></div></td>`;
+    row.innerHTML = `<td><div class="history-record-cell"><span class="history-cover">${icon("image",16)}</span><span><span class="cell-main"></span><small class="cell-sub"></small></span></div></td><td>${item.frame_count} 帧</td><td>${formatDuration(item.duration_ms)}</td><td>${Number(item.loop) === 0 ? "无限" : item.loop + " 次"}</td><td>${Number(item.source_count||0)} 张</td><td class="right"><div class="row-actions"><button class="view-row" title="查看原图">${icon("eye")}</button><button class="delete-row" title="删除">${icon("trash")}</button></div></td>`;
     $(".cell-main", row).textContent = formatTime(item.timestamp); $(".cell-sub", row).textContent = `#${item.id} · 用户 ${text(item.user_id)}`;
+    const coverIndex = (item.source_thumbnail_paths || []).findIndex(Boolean);
+    if (coverIndex >= 0) apiGet(`apng-history/thumbnail/${item.id}/${coverIndex}`).then(result => { const img=new Image(); img.src=result.data_url; img.alt="原图缩略图"; $(".history-cover",row).replaceChildren(img); }).catch(()=>{});
     $(".view-row", row).addEventListener("click", () => viewApng(item));
-    $(".download-row", row).addEventListener("click", () => downloadApng(item));
     $(".delete-row", row).addEventListener("click", async () => {
-      if (!await confirmAction("删除这个 APNG？", "服务器上的动画文件也会一并删除，已发送到 QQ 的消息不受影响。")) return;
+      if (!await confirmAction("删除这条 APNG 记录？", "记录、全部输入原图副本和缩略图都会彻底删除，已发送到 QQ 的消息不受影响。")) return;
       try { await apiPost("apng-history/delete", { id: item.id }); toast("APNG 已删除"); loadApngHistory(); }
       catch (error) { toast(`删除失败：${error.message}`, "error"); }
     });
@@ -571,10 +579,39 @@ function integratedDefaultSelectField(key, value, onChange) {
   return select;
 }
 
+function recommendedModelConfig(providerUrl, modelId, mode = "text") {
+  const id = String(modelId || "").toLowerCase();
+  const protocol = inferredProtocol(providerUrl);
+  const editing = mode === "edit";
+  const result = { label: "通用 OpenAI 图像", params: { _endpoint: editing ? "images/edits" : "images/generations", size: "1024x1024", n: 1 }, refer_field: editing ? "images" : "", max_refer_images: editing ? 10 : 0 };
+  if (id.includes("gpt-image") || id.includes("dall-e")) {
+    result.label = id.includes("dall-e") ? "OpenAI DALL·E" : "OpenAI GPT Image";
+    result.params = { ...result.params, quality: "auto", output_format: "png" };
+  } else if (id.includes("qwen") && id.includes("image")) {
+    result.label = "Qwen Image"; result.params = { image_size: "1024x1024", batch_size: 1, num_inference_steps: 20, guidance_scale: 7.5 };
+  } else if (id.includes("seedream")) {
+    result.label = "Seedream";
+    result.params = protocol === "RunningHub" ? { width: 2048, height: 2048, maxImages: 1, sequentialImageGeneration: "disabled" } : { aspect_ratio: "1:1", resolution: "1k", output_format: "jpeg", prompt_optimization_mode: "fast" };
+  } else if (id.includes("flux")) {
+    result.label = "FLUX"; result.params = { width: 1024, height: 1024, num_inference_steps: 28, guidance_scale: 3.5, seed: -1 };
+  } else if (id.includes("stable-diffusion") || id.includes("sdxl") || id.includes("stability")) {
+    result.label = "Stable Diffusion"; result.params = { width: 1024, height: 1024, steps: 30, cfg_scale: 7, seed: -1 };
+  } else if (id.includes("imagen") || id.includes("gemini") && id.includes("image")) {
+    result.label = "Google Imagen / Gemini Image"; result.params = { aspect_ratio: "1:1", output_format: "png", number_of_images: 1 };
+  } else if (protocol === "WaveSpeed") {
+    result.label = "WaveSpeed 通用模型"; result.params = { output_format: "jpeg" };
+  } else if (protocol === "RunningHub") {
+    result.label = "RunningHub 自定义工作流"; result.params = {};
+  }
+  return result;
+}
+
 function modelEditor(provider, initial, editing, onDone) {
   const dialog = makeDialog("modal template-editor-modal");
   const candidate = clone(initial || { name: "", model: "", mode: "text", enabled: true, enabled_as_default: true, fallback_order: 20, refer_field: "", max_refer_images: 0, min_prompt_length: 0, params: {}, custom_model: true });
-  dialog.innerHTML = `<div class="template-modal-head"><div><span class="eyebrow">IMAGE LAB / MODEL</span><h2>${editing ? "修改模型" : "添加模型"}</h2><p>${provider.name || "模型提供商"}</p></div><button class="modal-close" type="button">${icon("close")}</button></div><div class="template-modal-body"><div class="template-modal-error"></div><div class="field-grid model-editor-grid"></div></div><div class="template-modal-foot"><button class="soft-button model-test" type="button">${icon("refresh",16)}测试模型连接</button><button class="soft-button cancel" type="button">取消</button><button class="primary-button confirm" type="button">${icon("save",16)}保存模型</button></div>`;
+  let recommendation = recommendedModelConfig(provider.base_url, candidate.model, candidate.mode);
+  if (!editing && candidate.model && !Object.keys(candidate.params || {}).length) { candidate.params = clone(recommendation.params); candidate.refer_field = recommendation.refer_field; candidate.max_refer_images = recommendation.max_refer_images; }
+  dialog.innerHTML = `<div class="template-modal-head"><div><span class="eyebrow">IMAGE LAB / MODEL</span><h2>${editing ? "修改模型" : "添加模型"}</h2><p>${provider.name || "模型提供商"}</p></div><button class="modal-close" type="button">${icon("close")}</button></div><div class="template-modal-body"><div class="template-modal-error"></div><div class="model-recommendation"><span>参数模板：<b></b><small>首次添加时自动填入，之后可自由增删修改</small></span><button class="soft-button restore-params" type="button">${icon("refresh",15)}恢复推荐参数</button></div><div class="field-grid model-editor-grid"></div></div><div class="template-modal-foot"><button class="soft-button model-test" type="button">${icon("refresh",16)}测试模型连接</button><button class="soft-button cancel" type="button">取消</button><button class="primary-button confirm" type="button">${icon("save",16)}保存模型</button></div>`;
   const grid = $(".model-editor-grid", dialog);
   const specs = {
     model: { type: "string", description: "模型 ID", hint: candidate.custom_model ? "自定义模型允许手工填写服务商模型 ID" : "从连接返回的模型列表中选择" },
@@ -586,6 +623,7 @@ function modelEditor(provider, initial, editing, onDone) {
     max_refer_images: { type: "int", description: "参考图数量上限" }, min_prompt_length: { type: "int", description: "提示词最小长度" },
     params: { type: "object", description: "自定义请求参数", hint: "保留原有自由参数能力；OpenAI 兼容接口会自动使用 images/generations 端点" },
   };
+  const renderFields = () => { grid.replaceChildren(); recommendation = recommendedModelConfig(provider.base_url, candidate.model, candidate.mode); $(".model-recommendation b", dialog).textContent = recommendation.label;
   Object.entries(specs).forEach(([fieldKey, spec]) => {
     if (fieldKey === "model" && !candidate.custom_model) {
       const field = document.createElement("div"); field.className = "field fixed-model-field"; field.dataset.configKey = fieldKey;
@@ -597,9 +635,14 @@ function modelEditor(provider, initial, editing, onDone) {
       candidate[fieldKey] = next;
       if (fieldKey === "model" && !candidate.name) candidate.name = next;
       if (fieldKey === "mode" && next === "edit" && !candidate.refer_field) candidate.refer_field = "images";
+      if (fieldKey === "mode") { recommendation = recommendedModelConfig(provider.base_url, candidate.model, next); $(".model-recommendation b", dialog).textContent = recommendation.label; }
+      if (fieldKey === "model" && !editing) { recommendation = recommendedModelConfig(provider.base_url, next, candidate.mode); candidate.params = clone(recommendation.params); candidate.refer_field = recommendation.refer_field; candidate.max_refer_images = recommendation.max_refer_images; renderFields(); }
     }, true);
     grid.append(field);
   });
+  };
+  renderFields();
+  $(".restore-params", dialog).onclick = () => { recommendation = recommendedModelConfig(provider.base_url, candidate.model, candidate.mode); candidate.params = clone(recommendation.params); candidate.refer_field = recommendation.refer_field; candidate.max_refer_images = recommendation.max_refer_images; renderFields(); toast(`已恢复${recommendation.label}推荐参数`); };
   const close = () => dialog.close(); $(".modal-close", dialog).onclick = close; $(".cancel", dialog).onclick = close;
   $(".model-test", dialog).onclick = async event => {
     const button = event.currentTarget; button.disabled = true;
@@ -610,7 +653,7 @@ function modelEditor(provider, initial, editing, onDone) {
   $(".confirm", dialog).onclick = () => {
     const error = !String(candidate.model || "").trim() ? "请选择或填写模型 ID" : !String(candidate.name || "").trim() ? "请填写显示名称" : "";
     const box = $(".template-modal-error", dialog); box.textContent = error; box.classList.toggle("is-visible", !!error); if (error) return;
-    if (String(provider.protocol).toLowerCase() === "openai") candidate.params = { _endpoint: "images/generations", ...(candidate.params || {}) };
+    if (inferredProtocol(provider.base_url) === "OpenAI") candidate.params = { _endpoint: candidate.mode === "edit" ? "images/edits" : "images/generations", ...(candidate.params || {}) };
     onDone(candidate); dialog.close();
   };
   dialog.showModal();
@@ -618,7 +661,7 @@ function modelEditor(provider, initial, editing, onDone) {
 
 function providerEditor(initial, editing, onDone) {
   const dialog = makeDialog("modal template-editor-modal provider-editor-modal");
-  const candidate = clone(initial || { __template_key: "image_provider", name: "", source: "custom", protocol: "OpenAI", api_key: "", base_url: "https://api.openai.com/v1", astrbot_provider_id: "", enabled: true, models: [] });
+  const candidate = clone(initial || { __template_key: "image_provider", name: "", source: "custom", api_key: "", base_url: "https://api.openai.com/v1", astrbot_provider_id: "", enabled: true, models: [] });
   dialog.innerHTML = `<div class="template-modal-head"><div><span class="eyebrow">IMAGE LAB / PROVIDER</span><h2>${editing ? "修改模型提供商" : "新建模型提供商"}</h2><p>连接与模型集中配置</p></div><button class="modal-close" type="button">${icon("close")}</button></div><div class="template-modal-body"><div class="template-modal-error"></div><div class="field-grid provider-fields"></div><div class="provider-model-section"><div class="provider-model-toolbar"><div><h3>模型</h3><small class="provider-status">连接后获取可使用的生图模型</small></div><button class="soft-button add-model" type="button">${icon("plus",16)}自定义模型</button></div><div class="integrated-model-list"></div></div></div><div class="template-modal-foot"><button class="soft-button provider-fetch" type="button">${icon("refresh",16)}测试连接并获取模型</button><button class="soft-button cancel" type="button">取消</button><button class="primary-button confirm" type="button">${icon("save",16)}${editing ? "保存修改" : "添加提供商"}</button></div>`;
   const fields = $(".provider-fields", dialog); const modelList = $(".integrated-model-list", dialog);
   const renderModels = () => {
@@ -636,7 +679,6 @@ function providerEditor(initial, editing, onDone) {
     const specs = {
       name: { type: "string", description: "提供商名称", hint: "必须唯一，例如 硅基流动" },
       source: { type: "string", description: "来源", options: ["custom", "astrbot"], option_labels: { custom: "插件内配置", astrbot: "AstrBot 已有提供商" } },
-      protocol: { type: "string", description: "图像接口协议", options: ["OpenAI", "WaveSpeed", "RunningHub"], option_labels: { OpenAI: "OpenAI 兼容", WaveSpeed: "WaveSpeed", RunningHub: "RunningHub" } },
       api_key: { type: "string", secret: true, description: "API Key" }, base_url: { type: "string", description: "API Base URL", hint: "只填根地址；例如 https://api.siliconflow.cn/v1" },
       astrbot_provider_id: { type: "string", description: "AstrBot 提供商" }, enabled: { type: "bool", description: "启用提供商" },
     };
@@ -672,7 +714,7 @@ function imageProvidersField(initial, onChange) {
     root.replaceChildren();
     const sidebar = document.createElement("aside"); sidebar.className = "provider-console-sidebar";
     const sideHead = document.createElement("div"); sideHead.className = "provider-console-head"; sideHead.innerHTML = `<h3>提供商源</h3><button type="button">＋ 新增</button>`;
-    $("button", sideHead).onclick = () => { items.push({ __template_key: "image_provider", name: "", source: "custom", protocol: "OpenAI", api_key: "", base_url: "https://api.openai.com/v1", enabled: true, timeout: 300, proxy: "", custom_headers: {}, models: [] }); selected = items.length - 1; emit(); };
+    $("button", sideHead).onclick = () => { items.push({ __template_key: "image_provider", name: "", source: "custom", api_key: "", base_url: "https://api.openai.com/v1", enabled: true, timeout: 300, proxy: "", custom_headers: {}, models: [] }); selected = items.length - 1; emit(); };
     sidebar.append(sideHead);
     const sourceList = document.createElement("div"); sourceList.className = "provider-source-list";
     items.forEach((provider, index) => { const card = document.createElement("button"); card.type = "button"; card.className = `provider-source-card ${index === selected ? "is-active" : ""}`; card.innerHTML = `<span class="provider-source-logo">${String(provider.name || "?").slice(0, 1).toUpperCase()}</span><span><strong>${text(provider.name)}</strong><small>${text(provider.base_url)}</small></span><i>${icon("trash", 16)}</i>`; card.onclick = event => { if (event.target.closest("i")) { items.splice(index, 1); selected = Math.min(selected, Math.max(0, items.length - 1)); emit(); } else { selected = index; state.selectedProvider = index; render(); } }; sourceList.append(card); });
@@ -680,12 +722,12 @@ function imageProvidersField(initial, onChange) {
     const detail = document.createElement("section"); detail.className = "provider-console-detail"; root.append(detail);
     if (!items.length) { detail.innerHTML = `<div class="provider-console-empty"><b>尚未添加模型提供商</b><span>点击左侧“新增”，填写 API Base URL 和 Key。</span></div>`; return; }
     const provider = items[selected]; provider.models ||= []; provider.source = "custom";
-    detail.innerHTML = `<div class="provider-detail-title"><div><h2>${text(provider.name)}</h2><p>${text(provider.base_url)}</p></div></div><div class="provider-settings"><h3>设置</h3><div class="provider-setting-list"></div><details class="provider-advanced"><summary>高级配置…</summary><div class="provider-setting-list advanced-list"></div></details></div><div class="provider-models"><div class="provider-model-header"><div><h3>模型</h3><small>已配置 ${(provider.models || []).length} 个</small></div><div class="provider-model-actions"><input class="model-search" type="search" placeholder="搜索模型名称或 ID"><button class="soft-button fetch-models" type="button">${icon("refresh", 16)}获取模型列表</button><button class="text-button custom-model" type="button">＋ 自定义模型</button></div></div><div class="provider-inline-status" role="status"></div><div class="provider-configured-models"></div><div class="provider-discovered-models"></div><div class="model-search-empty" hidden>没有匹配的模型</div></div>`;
+    const detected = inferredProtocol(provider.base_url);
+    detail.innerHTML = `<div class="provider-detail-title"><div><h2>${text(provider.name)}</h2><p>${text(provider.base_url)}</p><small class="detected-protocol">已自动识别：${detected === "OpenAI" ? "OpenAI 兼容" : detected}</small></div></div><div class="provider-settings"><h3>设置</h3><div class="provider-setting-list"></div><details class="provider-advanced"><summary>高级配置…</summary><div class="provider-setting-list advanced-list"></div></details></div><div class="provider-models"><div class="provider-model-header"><div><h3>模型</h3><small>已配置 ${(provider.models || []).length} 个</small></div><div class="provider-model-actions"><input class="model-search" type="search" placeholder="搜索已配置模型"><button class="soft-button fetch-models" type="button">${icon("refresh", 16)}${detected === "WaveSpeed" ? "测试连接" : "获取模型列表"}</button><button class="text-button custom-model" type="button">＋ 自定义模型</button></div></div><div class="provider-inline-status" role="status">${detected === "WaveSpeed" ? "WaveSpeed 模型需要自定义添加，模型 ID 会自动拼接到请求路径。" : ""}</div><div class="provider-configured-models"></div><div class="provider-discovered-models"></div><div class="model-search-empty" hidden>没有匹配的模型</div></div>`;
     const list = $(".provider-setting-list", detail);
     list.append(setting("ID", "提供商唯一 ID（不是模型 ID）", input(provider.name, false, value => { provider.name = value.trim(); emit(); })));
     list.append(setting("API Key", "API 密钥", input(provider.api_key, true, value => { provider.api_key = value; emit(false); })));
-    list.append(setting("API Base URL", "自定义 API 端点 URL", input(provider.base_url, false, value => { provider.base_url = value.trim().replace(/\/$/, ""); emit(); })));
-    const protocol = document.createElement("select"); [["OpenAI", "OpenAI 兼容"], ["WaveSpeed", "WaveSpeed"], ["RunningHub", "RunningHub"]].forEach(([value, label]) => protocol.add(new Option(label, value))); protocol.value = provider.protocol || "OpenAI"; protocol.onchange = () => { provider.protocol = protocol.value; emit(); }; list.append(setting("图像接口协议", "决定模型请求路径的拼接方式", protocol));
+    list.append(setting("API Base URL", "填写后自动识别接口协议", input(provider.base_url, false, value => { provider.base_url = value.trim().replace(/\/$/, ""); delete provider.protocol; emit(); })));
     const advanced = $(".advanced-list", detail);
     advanced.append(setting("超时时间", "单位为秒", input(provider.timeout ?? 300, false, value => { provider.timeout = Number(value) || 300; emit(false); })));
     advanced.append(setting("代理地址", "仅对该提供商的 API 请求生效", input(provider.proxy || "", false, value => { provider.proxy = value.trim(); emit(false); })));
@@ -695,7 +737,7 @@ function imageProvidersField(initial, onChange) {
     const applyModelFilter = () => { const filter = $(".model-search", detail).value.trim().toLowerCase(); drawRows(filter); let visible = rows.children.length; $$(".discovered-model", detail).forEach(row => { row.hidden = Boolean(filter) && !row.textContent.toLowerCase().includes(filter); if (!row.hidden) visible += 1; }); $(".model-search-empty", detail).hidden = visible > 0; };
     applyModelFilter(); $(".model-search", detail).oninput = applyModelFilter;
     $(".custom-model", detail).onclick = () => modelEditor(provider, null, false, model => { provider.models.push(model); emit(); });
-    $(".fetch-models", detail).onclick = async event => { const button = event.currentTarget; button.disabled = true; const status = $(".provider-inline-status", detail); status.textContent = "正在连接并读取模型…"; status.className = "provider-inline-status is-testing"; try { const result = await apiPost("providers/models", { provider }); const models = result.models || []; state.providerModels[provider.name] = models; provider.available_models = models; status.textContent = `✓ 连接成功 · ${result.message || `发现 ${models.length} 个模型`}`; status.className = "provider-inline-status is-success"; const discovered = $(".provider-discovered-models", detail); discovered.replaceChildren(); const configured = new Set(provider.models.map(model => model.model)); models.filter(id => !configured.has(id)).forEach(id => { const row = document.createElement("button"); row.type = "button"; row.className = "discovered-model"; row.innerHTML = `<span>${id}</span><b>＋ 启用</b>`; row.onclick = () => modelEditor(provider, { model: id, name: id, mode: "text", enabled: true, enabled_as_default: true, fallback_order: 20, refer_field: "", max_refer_images: 0, min_prompt_length: 0, params: {}, custom_model: false }, false, model => { provider.models.push(model); emit(); }); discovered.append(row); }); applyModelFilter(); emit(false); } catch (error) { status.textContent = `✕ 连接失败 · ${error.message}`; status.className = "provider-inline-status is-error"; } finally { button.disabled = false; } };
+    $(".fetch-models", detail).onclick = async event => { const button = event.currentTarget; button.disabled = true; const status = $(".provider-inline-status", detail); const waveSpeed = inferredProtocol(provider.base_url) === "WaveSpeed"; status.textContent = waveSpeed ? "正在测试连接…" : "正在连接并读取模型…"; status.className = "provider-inline-status is-testing"; try { const result = waveSpeed ? await apiPost("providers/test", { provider }) : await apiPost("providers/models", { provider }); const models = result.models || []; state.providerModels[provider.name] = models; provider.available_models = models; status.textContent = waveSpeed ? `✓ 连接成功 · ${result.message || "请使用自定义模型"}` : `✓ 连接成功 · ${result.message || `发现 ${models.length} 个模型`}`; status.className = "provider-inline-status is-success"; const discovered = $(".provider-discovered-models", detail); discovered.replaceChildren(); const configured = new Set(provider.models.map(model => model.model)); models.filter(id => !configured.has(id)).forEach(id => { const row = document.createElement("button"); row.type = "button"; row.className = "discovered-model"; row.innerHTML = `<span>${id}</span><b>＋ 启用</b>`; row.onclick = () => modelEditor(provider, { model: id, name: id, mode: "text", enabled: true, enabled_as_default: true, fallback_order: 20, refer_field: "", max_refer_images: 0, min_prompt_length: 0, params: {}, custom_model: false }, false, model => { provider.models.push(model); emit(); }); discovered.append(row); }); applyModelFilter(); emit(false); } catch (error) { status.textContent = `✕ 连接失败 · ${error.message}`; status.className = "provider-inline-status is-error"; } finally { button.disabled = false; } };
   };
   render(); return root;
 }

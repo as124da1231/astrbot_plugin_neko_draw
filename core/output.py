@@ -255,14 +255,15 @@ class OutputService:
             source.convert("RGBA").save(target, format="PNG")
         return target
 
-    def save_history_sources(self, source_paths: list[str]) -> list[str]:
-        """保存图片编辑所用原图，供生成历史详情查看。"""
+    def save_history_sources(self, source_paths: list[str], prefix: str = "source") -> list[str]:
+        """复制插件收到的原图，作为可独立清理的历史资产。"""
         target_dir = self.data_dir / "history_inputs"
         target_dir.mkdir(parents=True, exist_ok=True)
         saved = []
         for index, source_path in enumerate(source_paths):
             try:
-                target = target_dir / f"source_{uuid.uuid4().hex}_{index}.png"
+                safe_prefix = "apng_source" if prefix == "apng_source" else "source"
+                target = target_dir / f"{safe_prefix}_{uuid.uuid4().hex}_{index}.png"
                 with PILImage.open(source_path) as source:
                     source.seek(0)
                     source.convert("RGBA").save(target, format="PNG")
@@ -270,6 +271,54 @@ class OutputService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[neko_draw] 编辑原图保存失败，已跳过: {exc}")
         return saved
+
+    def save_history_thumbnails(self, image_paths: list[str], prefix: str) -> list[str]:
+        """为历史列表生成轻量缩略图；失败项以空字符串占位以保持索引。"""
+        target_dir = self.data_dir / "history_thumbnails"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved: list[str] = []
+        safe_prefix = "input" if prefix == "input" else "output"
+        for index, image_path in enumerate(image_paths):
+            target = target_dir / f"thumb_{safe_prefix}_{uuid.uuid4().hex}_{index}.webp"
+            try:
+                with PILImage.open(image_path) as source:
+                    source.seek(0)
+                    image = source.convert("RGB")
+                    image.thumbnail((360, 360))
+                    image.save(target, format="WEBP", quality=72, method=4)
+                saved.append(str(target))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[neko_draw] 历史缩略图生成失败，已跳过: {exc}")
+                saved.append("")
+        return saved
+
+    def cleanup_generated_images(self, image_paths: list[str]) -> None:
+        """删除本插件生成且尚未写入历史的原始结果。"""
+        save_root = self.save_dir.resolve()
+        for value in image_paths:
+            try:
+                path = Path(value).resolve()
+                if path.parent == save_root and path.name.startswith("img_"):
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError) as exc:
+                logger.warning(f"[neko_draw] 生图结果清理失败 {value}: {exc}")
+
+    def cleanup_history_assets(self, paths: list[str]) -> None:
+        """清理尚未绑定历史记录的输入副本或缩略图。"""
+        roots = {
+            (self.data_dir / "history_inputs").resolve(): ("source_", "apng_source_"),
+            (self.data_dir / "history_thumbnails").resolve(): ("thumb_",),
+        }
+        for value in paths:
+            if not value:
+                continue
+            try:
+                path = Path(value).resolve()
+                prefixes = roots.get(path.parent)
+                if prefixes and path.name.startswith(prefixes):
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
 
     @staticmethod
     def _profile_key(profile: str, key: str) -> str:

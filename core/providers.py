@@ -20,6 +20,16 @@ def normalize_provider_type(value: object) -> str:
     return "openai" if raw in {"openai", "openapi"} else raw
 
 
+def infer_provider_type(base_url: object) -> str:
+    """仅根据地址识别调用协议；未知服务按通用 OpenAI 图像接口处理。"""
+    value = str(base_url or "").strip().lower()
+    if "wavespeed.ai" in value or "/api/v3" in value:
+        return "wavespeed"
+    if "runninghub.cn" in value or "/openapi/v2" in value:
+        return "runninghub"
+    return "openai"
+
+
 def list_astrbot_providers(context: Any) -> list[dict[str, Any]]:
     """列出 AstrBot 已加载的聊天提供商，不向 WebUI 暴露密钥。"""
     result: list[dict[str, str]] = []
@@ -73,18 +83,7 @@ def resolve_astrbot_provider(
     key_getter = getattr(provider, "get_current_key", None)
     api_key = str(key_getter() if callable(key_getter) else "")
     base_url = str(config.get("api_base") or "https://api.openai.com/v1").strip()
-    selected = str(protocol or "auto").strip().lower()
-    if selected == "auto":
-        lower = base_url.lower()
-        if "wavespeed" in lower or "/api/v3" in lower:
-            selected = "wavespeed"
-        elif "runninghub" in lower or "/openapi/v2" in lower:
-            selected = "runninghub"
-        else:
-            selected = "openai"
-    selected = normalize_provider_type(selected)
-    if selected not in {"wavespeed", "runninghub", "openai"}:
-        raise OpenAPIError("AstrBot 提供商接口协议无效")
+    selected = infer_provider_type(base_url)
     custom_headers = config.get("custom_headers")
     if not isinstance(custom_headers, dict):
         custom_headers = {}
@@ -146,12 +145,10 @@ class AstrBotProviderClient:
 
 async def test_provider_connection(item: dict, context: Any, *, timeout: float = 20) -> str:
     """执行不会创建图片任务的连接测试。"""
-    provider_type = normalize_provider_type(item.get("type"))
-    if provider_type == "astrbot":
+    provider_type = infer_provider_type(item.get("base_url"))
+    if str(item.get("source", "custom")).lower() == "astrbot" or normalize_provider_type(item.get("type")) == "astrbot":
         provider_id = str(item.get("astrbot_provider_id", "")).strip()
-        protocol, api_key, base_url, _headers = resolve_astrbot_provider(
-            context, provider_id, item.get("astrbot_protocol", "auto")
-        )
+        protocol, api_key, base_url, _headers = resolve_astrbot_provider(context, provider_id)
         item = {"type": protocol, "api_key": api_key, "base_url": base_url}
         provider_type = protocol
 
@@ -164,14 +161,14 @@ async def test_provider_connection(item: dict, context: Any, *, timeout: float =
     if not base_url.startswith(("http://", "https://")):
         raise ValueError("API Base URL 必须以 http:// 或 https:// 开头")
 
-    if provider_type == "runninghub":
-        await test_provider_connection({"type": "RunningHub", "api_key": api_key, "base_url": base_url}, context, timeout=timeout)
-        return []
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     client_timeout = aiohttp.ClientTimeout(total=timeout)
     async with aiohttp.ClientSession(timeout=client_timeout) as session:
-        if provider_type in {"wavespeed", "openai"}:
+        if provider_type == "openai":
             async with session.get(f"{base_url}/models", headers=headers) as response:
+                status = response.status
+        elif provider_type == "wavespeed":
+            async with session.get(base_url, headers=headers) as response:
                 status = response.status
         else:
             async with session.post(
@@ -191,7 +188,7 @@ async def test_provider_connection(item: dict, context: Any, *, timeout: float =
 
 async def fetch_provider_models(item: dict, context: Any, *, timeout: float = 20) -> list[str]:
     """验证提供商并读取 OpenAI 风格的模型列表。不会发起生图。"""
-    provider_type = normalize_provider_type(item.get("protocol") or item.get("type"))
+    provider_type = infer_provider_type(item.get("base_url"))
     if str(item.get("source", "custom")).lower() == "astrbot" or provider_type == "astrbot":
         provider_id = str(item.get("astrbot_provider_id", "")).strip()
         matching = next((p for p in list_astrbot_providers(context) if p["id"] == provider_id), None)
@@ -204,6 +201,9 @@ async def fetch_provider_models(item: dict, context: Any, *, timeout: float = 20
         raise ValueError("请先填写 API Key")
     if not base_url.startswith(("http://", "https://")):
         raise ValueError("API Base URL 必须以 http:// 或 https:// 开头")
+    if provider_type in {"wavespeed", "runninghub"}:
+        await test_provider_connection(item, context, timeout=timeout)
+        return []
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
         async with session.get(f"{base_url}/models", headers=headers) as response:
@@ -230,6 +230,10 @@ async def test_model_connection(provider: dict, model: dict, context: Any, *, ti
     model_id = str(model.get("model") or model.get("id") or "").strip()
     if not model_id:
         raise ValueError("请先选择或填写模型")
+    provider_type = infer_provider_type(provider.get("base_url"))
+    if provider_type == "wavespeed":
+        await test_provider_connection(provider, context, timeout=timeout)
+        return f"WaveSpeed 连接正常；模型「{model_id}」将在请求时拼接到路径"
     models = await fetch_provider_models(provider, context, timeout=timeout)
     if models and model_id not in models:
         raise ValueError(f"连接正常，但模型列表中没有「{model_id}」")
@@ -286,7 +290,6 @@ def sync_image_provider_config(config) -> None:
                 "__template_key": "image_provider",
                 "name": old.get("name", ""),
                 "source": "astrbot" if old_type == "astrbot" else "custom",
-                "protocol": "OpenAI" if old_type == "openai" else str(old.get("type", "OpenAI")),
                 "api_key": old.get("api_key", ""),
                 "base_url": old.get("base_url", ""),
                 "astrbot_provider_id": old.get("astrbot_provider_id", ""),
@@ -311,7 +314,7 @@ def sync_image_provider_config(config) -> None:
         if not name:
             continue
         source = str(provider.get("source", "custom")).lower()
-        protocol = str(provider.get("protocol", "OpenAI"))
+        protocol = {"wavespeed": "WaveSpeed", "runninghub": "RunningHub", "openai": "OpenAI"}[infer_provider_type(provider.get("base_url"))]
         legacy_providers.append({
             "__template_key": "provider_item", "name": name,
             "type": "AstrBot" if source == "astrbot" else protocol,
@@ -357,7 +360,10 @@ def sync_image_provider_config(config) -> None:
 def ensure_provider_config(config) -> None:
     """把 v1.0.0 的固定密钥配置迁移为可添加的提供商列表。"""
     if config.get("model_providers") is None:
-        config["model_providers"] = [
+        has_legacy_credentials = any(str(config.get(key, "")).strip() for key in (
+            "api_key", "runninghub_api_key", "openapi_api_key",
+        ))
+        config["model_providers"] = ([
             {
                 "__template_key": "provider_item",
                 "type": "WaveSpeed",
@@ -379,7 +385,7 @@ def ensure_provider_config(config) -> None:
                 "api_key": config.get("openapi_api_key", ""),
                 "base_url": config.get("openapi_base_url", "https://api.openai.com/v1"),
             },
-        ]
+        ] if has_legacy_credentials else [])
 
     names_by_type: dict[str, str] = {}
     provider_names: set[str] = set()
@@ -418,7 +424,7 @@ def create_providers(config, context: Any = None) -> dict[str, object]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name", "")).strip()
-        provider_type = normalize_provider_type(item.get("type"))
+        provider_type = "astrbot" if normalize_provider_type(item.get("type")) == "astrbot" else infer_provider_type(item.get("base_url"))
         if not name or provider_type not in PROVIDER_TYPES:
             continue
         item_shared = {

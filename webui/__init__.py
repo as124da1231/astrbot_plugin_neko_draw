@@ -22,7 +22,7 @@ from ..core.uploads import store_upload
 from ..core.configuration import validate_config
 from ..core.providers import (
     fetch_provider_models, list_astrbot_providers, test_model_connection,
-    test_provider_connection,
+    test_provider_connection, infer_provider_type,
 )
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -84,10 +84,12 @@ class WebUIBridge:
             (f"/{PLUGIN_NAME}/history/delete", self.api_delete_history, ["POST"], "Delete history record"),
             (f"/{PLUGIN_NAME}/history/image/<record_id>/<idx>", self.api_history_image, ["GET"], "Serve history image"),
             (f"/{PLUGIN_NAME}/history/source/<record_id>/<idx>", self.api_history_source, ["GET"], "Serve edit source image"),
+            (f"/{PLUGIN_NAME}/history/thumbnail/<record_id>/<kind>/<idx>", self.api_history_thumbnail, ["GET"], "Serve history thumbnail"),
             (f"/{PLUGIN_NAME}/apng-history", self.api_list_apng_history, ["GET"], "List APNG creations"),
             (f"/{PLUGIN_NAME}/apng-history/delete", self.api_delete_apng_history, ["POST"], "Delete APNG creation"),
             (f"/{PLUGIN_NAME}/apng-history/clear", self.api_clear_apng_history, ["POST"], "Clear APNG creations"),
-            (f"/{PLUGIN_NAME}/apng-history/image/<record_id>", self.api_apng_history_image, ["GET"], "Serve APNG file"),
+            (f"/{PLUGIN_NAME}/apng-history/source/<record_id>/<idx>", self.api_apng_history_source, ["GET"], "Serve APNG source"),
+            (f"/{PLUGIN_NAME}/apng-history/thumbnail/<record_id>/<idx>", self.api_apng_history_thumbnail, ["GET"], "Serve APNG thumbnail"),
         ]
         for path, handler, methods, desc in routes:
             try:
@@ -217,8 +219,14 @@ class WebUIBridge:
             if not isinstance(item, dict):
                 return error_response("缺少有效的模型提供商配置", status_code=400)
             models = await fetch_provider_models(item, self.context)
+            detected = infer_provider_type(item.get("base_url"))
+            message = (
+                f"连接成功，发现 {len(models)} 个模型"
+                if models or detected == "openai"
+                else f"连接成功，{detected} 模型需要自定义添加"
+            )
             return json_response({"status": "ok", "data": {
-                "message": f"连接成功，发现 {len(models)} 个模型",
+                "message": message,
                 "models": models,
             }})
         except (ValueError, asyncio.TimeoutError) as e:
@@ -362,6 +370,20 @@ class WebUIBridge:
         except Exception as e:
             return error_response(str(e), status_code=500)
 
+    async def api_history_thumbnail(self, record_id: str, kind: str, idx: str) -> Any:
+        try:
+            item = self.history.get(int(record_id))
+            if item is None:
+                return error_response("记录不存在", status_code=404)
+            key = "source_thumbnail_paths" if kind == "input" else "image_thumbnail_paths"
+            paths = item.get(key, [])
+            index = int(idx)
+            if index < 0 or index >= len(paths) or not paths[index]:
+                return error_response("缩略图不存在", status_code=404)
+            return await self._stored_image(Path(paths[index]))
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
     async def api_list_apng_history(self) -> Any:
         try:
             args = dict(request.query) if hasattr(request, "query") and request.query else {}
@@ -387,11 +409,28 @@ class WebUIBridge:
         except Exception as e:
             return error_response(str(e), status_code=500)
 
-    async def api_apng_history_image(self, record_id: str) -> Any:
+    async def api_apng_history_source(self, record_id: str, idx: str) -> Any:
         try:
             item = self.apng_history.get(int(record_id))
             if item is None:
                 return error_response("记录不存在", status_code=404)
-            return await self._stored_image(Path(item["file_path"]))
+            paths = item.get("source_image_paths", [])
+            index = int(idx)
+            if index < 0 or index >= len(paths):
+                return error_response("原图索引越界", status_code=404)
+            return await self._stored_image(Path(paths[index]))
+        except Exception as e:
+            return error_response(str(e), status_code=500)
+
+    async def api_apng_history_thumbnail(self, record_id: str, idx: str) -> Any:
+        try:
+            item = self.apng_history.get(int(record_id))
+            if item is None:
+                return error_response("记录不存在", status_code=404)
+            paths = item.get("source_thumbnail_paths", [])
+            index = int(idx)
+            if index < 0 or index >= len(paths) or not paths[index]:
+                return error_response("缩略图不存在", status_code=404)
+            return await self._stored_image(Path(paths[index]))
         except Exception as e:
             return error_response(str(e), status_code=500)
