@@ -6,8 +6,10 @@ from typing import Any
 
 import aiohttp
 
+from .key_rotation import normalize_keys
+from .comfyui_workflow import upgrade_workflow_roles
 from .openapi import OpenAPIClient, OpenAPIError
-from .runninghub import RunningHubClient
+from .runninghub import RunningHubClient, normalize_instance_type
 from .wavespeed import WavespeedClient
 from .protocols import infer_provider_type, normalize_provider_base_url
 
@@ -93,7 +95,10 @@ class AstrBotProviderClient:
             max(1, int(client_options.get("max_concurrency", 2)))
         )
 
-    async def generate(self, model: str, payload: dict) -> list[str]:
+    async def generate(
+        self, model: str, payload: dict, *,
+        on_task_id: Any = None,
+    ) -> list[str]:
         protocol, api_key, base_url, custom_headers = resolve_astrbot_provider(
             self.context, self.provider_id, self.protocol
         )
@@ -122,7 +127,9 @@ class AstrBotProviderClient:
             )
         async with self._semaphore:
             try:
-                return await client.generate(model, dict(payload))
+                return await client.generate(
+                    model, dict(payload), on_task_id=on_task_id
+                )
             finally:
                 await client.close()
 
@@ -227,6 +234,150 @@ async def test_model_connection(provider: dict, model: dict, context: Any, *, ti
     return f"模型「{model_id}」连接正常；本次未提交生图任务"
 
 
+def _find_provider(config: Any, name: str) -> dict:
+    """按名称取出用户配置里的提供商（兼容 image_providers / model_providers）。"""
+    if not str(name or "").strip():
+        raise ValueError("请先选择模型提供商")
+    items: Any = []
+    if hasattr(config, "get"):
+        items = config.get("image_providers") or config.get("model_providers") or []
+    provider = next(
+        (p for p in items if isinstance(p, dict) and str(p.get("name", "")).strip() == name),
+        None,
+    )
+    if provider is None:
+        raise ValueError(f"未找到名为「{name}」的提供商，请先保存该提供商")
+    return provider
+
+
+async def test_comfyui_workflow(
+    workflow: Any, provider_name: str, config: Any, *, timeout: float = 20.0,
+) -> dict:
+    """检查 ComfyUI 工作流配置是否完整、RunningHub 连接是否可用。
+
+    **不提交任何生图任务、不消耗额度**（与模型的「测试连接」一致）。只校验：工作流 ID /
+    运行模式 / 参数映射是否齐全，以及 RunningHub 地址与 Key 是否可用。工作流是否「已保存
+    并运行过一次」（否则运行时报“工作流未保存”）必须真正跑一次才知道，本测试不做。
+    """
+    from .comfyui_workflow import build_node_info_list
+
+    if not isinstance(workflow, dict):
+        raise ValueError("缺少有效的工作流配置")
+    run_mode = str(workflow.get("run_mode") or "workflow").strip().lower()
+    is_proxy = run_mode in ("proxy", "native", "comfyui")
+    workflow_id = str(workflow.get("workflow_id") or "").strip()
+    if is_proxy:
+        # 原生代理不用平台侧工作流 ID，只要求保存过整份 API JSON
+        if not str(workflow.get("raw_json") or "").strip():
+            raise ValueError("原生代理模式需要先上传一次 API 格式工作流 JSON")
+    else:
+        if not workflow_id:
+            raise ValueError("请填写 RunningHub 工作流 / AI 应用 ID")
+        if not workflow_id.isdigit():
+            raise ValueError("工作流 / AI 应用 ID 应为纯数字")
+
+    provider = _find_provider(config, str(provider_name or "").strip())
+    if infer_provider_type(provider.get("base_url")) != "runninghub":
+        raise ValueError("该提供商不是 RunningHub 类型，无法测试 ComfyUI 工作流")
+    if not str(provider.get("api_key") or "").strip() and not provider.get("api_keys"):
+        raise ValueError("请先在提供商里填写 API Key")
+
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    mapped = [n for n in nodes if isinstance(n, dict) and str(n.get("role") or "ignore") != "ignore"]
+    if not mapped:
+        raise ValueError("还没有映射任何参数，请先上传 API 工作流 JSON 并确认用途")
+    if not build_node_info_list(nodes, {}, workflow.get("refer_field", "")):
+        raise ValueError("工作流没有可用的参数映射，请先上传并映射至少一个参数")
+
+    # 连接可用性探测：与模型的「测试连接」同款，只探活、不产生任务。
+    connection = await test_provider_connection(provider, None, timeout=timeout)
+    is_app = run_mode in ("ai_app", "app", "webapp")
+    label = "原生代理" if is_proxy else ("AI 应用" if is_app else "工作流")
+    where = "整份 JSON" if is_proxy else f"ID {workflow_id}"
+    return {
+        "ok": True, "status": "OK", "images": [],
+        "message": (
+            f"配置完整：{label} {where}，已映射 {len(mapped)} 项；"
+            f"{connection}。未提交任务、不消耗额度"
+        ),
+    }
+
+
+def _runninghub_site(base_url: object) -> str:
+    """据 Base URL 判断 RunningHub 站点，返回其主机名；非 RunningHub 返回空串。"""
+    text = str(base_url or "").lower()
+    if "runninghub.cn" in text:
+        return "www.runninghub.cn"
+    if "runninghub.ai" in text:
+        return "www.runninghub.ai"
+    return ""
+
+
+async def fetch_provider_balances(item: dict, context: Any, *, timeout: float = 20) -> dict:
+    """逐个查询提供商各 Key 的账户余额，不产生生图任务、不消耗额度。
+
+    目前 RunningHub 走官方 ``POST {host}/uc/openapi/accountStatus``（国内站 / 国际站
+    各自独立）。返回 ``{"site": 主机名, "items": [{index,label,ok,balance,currency,message}]}``，
+    主 Key 在最前、其后按顺序是备用 Key。
+    """
+    if str(item.get("source", "custom")).lower() == "astrbot" \
+            or normalize_provider_type(item.get("type")) == "astrbot":
+        raise ValueError("AstrBot 已有提供商的余额请在 AstrBot 内查看")
+    provider_type = infer_provider_type(item.get("base_url"))
+    base_url = str(item.get("base_url", "")).strip().rstrip("/")
+    host = _runninghub_site(base_url)
+    if provider_type != "runninghub" or not host:
+        raise ValueError("该提供商暂不支持余额查询（目前支持 RunningHub 国内站 / 国际站）")
+    keys = normalize_keys(item.get("api_key"), item.get("api_keys"))
+    if not keys:
+        raise ValueError("请先填写 API Key")
+    url = f"https://{host}/uc/openapi/accountStatus"
+    entries: list[dict] = []
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+        for index, key in enumerate(keys):
+            entry = {
+                "index": index,
+                "label": "主 Key" if index == 0 else f"备用 Key #{index}",
+                "ok": False,
+                "balance": None,
+                "currency": "",
+                "message": "",
+            }
+            try:
+                async with session.post(
+                    url,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"apikey": key},
+                ) as response:
+                    raw = await response.text()
+                    status = response.status
+            except aiohttp.ClientError as e:
+                entry["message"] = f"网络错误：{e}"
+                entries.append(entry)
+                continue
+            if status in {401, 403}:
+                entry["message"] = "认证失败，请检查该 Key"
+            elif status >= 400:
+                entry["message"] = f"查询失败（HTTP {status}）"
+            else:
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict) and str(payload.get("code")) == "0":
+                    data = payload.get("data") or {}
+                    entry["ok"] = True
+                    entry["balance"] = str(
+                        data.get("remainCoins") or data.get("remainMoney") or "0"
+                    )
+                    entry["currency"] = str(data.get("currency") or "")
+                else:
+                    message = payload.get("msg") if isinstance(payload, dict) else ""
+                    entry["message"] = str(message or "查询失败")
+            entries.append(entry)
+    return {"site": host, "items": entries}
+
+
 def _model_defaults(raw: dict) -> dict:
     mode = str(raw.get("mode", "text")).strip().lower()
     try:
@@ -278,6 +429,7 @@ def sync_image_provider_config(config) -> None:
                 "name": old.get("name", ""),
                 "source": "astrbot" if old_type == "astrbot" else "custom",
                 "api_key": old.get("api_key", ""),
+                "api_keys": old.get("api_keys", []),
                 "base_url": old.get("base_url", ""),
                 "astrbot_provider_id": old.get("astrbot_provider_id", ""),
                 "enabled": True,
@@ -305,7 +457,9 @@ def sync_image_provider_config(config) -> None:
         legacy_providers.append({
             "__template_key": "provider_item", "name": name,
             "type": "AstrBot" if source == "astrbot" else protocol,
-            "api_key": provider.get("api_key", ""), "base_url": provider.get("base_url", ""),
+            "api_key": provider.get("api_key", ""),
+            "api_keys": provider.get("api_keys", []),
+            "base_url": provider.get("base_url", ""),
             "timeout": provider.get("timeout", config.get("timeout", 300)),
             "proxy": provider.get("proxy", ""),
             "custom_headers": provider.get("custom_headers", {}),
@@ -342,6 +496,85 @@ def sync_image_provider_config(config) -> None:
     config["model_templates"] = legacy_templates
     config["default_text_model"] = config.get("default_text_model_v2", config.get("default_text_model", ""))
     config["default_edit_model"] = config.get("default_edit_model_v2", config.get("default_edit_model", ""))
+
+
+def sync_comfyui_workflows(config) -> None:
+    """把 comfyui_workflows 投影为运行时模型模板。
+
+    工作流与普通模型共用 model_templates 运行时：模板的 model = workflowId，
+    额外携带 workflow 映射，客户端见到 ``_comfyui`` 即走工作流接口。
+    本函数幂等：每次先移除旧的投影项（带 comfyui 标记），再按当前配置重建。
+    """
+    templates = config.get("model_templates")
+    if not isinstance(templates, list):
+        templates = []
+    templates = [
+        item for item in templates
+        if not (isinstance(item, dict) and item.get("comfyui"))
+    ]
+    workflows = config.get("comfyui_workflows")
+    if isinstance(workflows, list):
+        for item in workflows:
+            if not isinstance(item, dict) or item.get("enabled", True) is False:
+                continue
+            # 兼容旧配置：给尚未映射的字段补上新增用途（画师风格 / 底模 / LoRA /
+            # denoise 等），无需重新上传工作流 JSON。AI 应用接口只能改应用开放的
+            # 字段，自动补映射反而可能提交出应用不认识的节点，故跳过。
+            run_mode = str(item.get("run_mode", "workflow") or "workflow")
+            if run_mode != "ai_app" and isinstance(item.get("nodes"), list):
+                # 带上原始工作流 JSON：能识别出被下游引用的常量节点（如尺寸分支）
+                raw_workflow = None
+                raw = item.get("workflow")
+                if isinstance(raw, dict):
+                    raw_workflow = raw
+                elif isinstance(raw, str) and raw.strip():
+                    try:
+                        import json as _json
+                        raw_workflow = _json.loads(raw)
+                    except Exception:
+                        raw_workflow = None
+                upgrade_workflow_roles(item["nodes"], raw_workflow)
+            name = str(item.get("name", "")).strip()
+            workflow_id = str(item.get("workflow_id", "")).strip()
+            provider = str(item.get("provider", "")).strip()
+            # 原生代理模式不需要平台侧工作流 ID（校验层也只要求 raw_json），
+            # 这里不能再拿 workflow_id 当必需字段，否则代理工作流永远不会被投影成
+            # 运行时模板：面板里能选中它，实际却静默回退到别的模型。
+            proxy_mode = run_mode in ("proxy", "native", "comfyui")
+            if not name or not provider:
+                continue
+            if not proxy_mode and not workflow_id:
+                continue
+            try:
+                fallback = int(item.get("fallback_order", 30) or 30)
+            except (TypeError, ValueError):
+                fallback = 30
+            try:
+                max_ref = max(0, int(item.get("max_refer_images", 0) or 0))
+            except (TypeError, ValueError):
+                max_ref = 0
+            templates.append({
+                "name": name,
+                # 代理模式没有平台工作流 ID，用名称占位（客户端按 _comfyui + run_mode 走代理）
+                "model": workflow_id or name,
+                "provider": provider,
+                "enabled": True,
+                "enabled_as_default": bool(item.get("enabled_as_default", True)),
+                "fallback_order": fallback,
+                "refer_field": str(item.get("refer_field", "")).strip(),
+                "max_refer_images": max_ref,
+                "params": {},
+                "comfyui": True,
+                "workflow": {
+                    "nodes": item.get("nodes", []) if isinstance(item.get("nodes"), list) else [],
+                    "instance_type": normalize_instance_type(item.get("instance_type")),
+                    "use_personal_queue": bool(item.get("use_personal_queue", False)),
+                    "run_mode": str(item.get("run_mode", "workflow") or "workflow"),
+                    "refer_field": str(item.get("refer_field", "")).strip(),
+                    "raw_json": str(item.get("raw_json", "") or "").strip(),
+                },
+            })
+    config["model_templates"] = templates
 
 
 def ensure_provider_config(config) -> None:
@@ -395,9 +628,10 @@ def ensure_provider_config(config) -> None:
         if migrated:
             template["provider"] = migrated
     sync_image_provider_config(config)
+    sync_comfyui_workflows(config)
 
 
-def create_providers(config, context: Any = None) -> dict[str, object]:
+def create_providers(config, context: Any = None, data_dir: Any = None) -> dict[str, object]:
     """返回以用户定义的提供商名称为键的客户端字典。"""
     shared = {
         "proxy": config.get("proxy") or None,
@@ -435,10 +669,12 @@ def create_providers(config, context: Any = None) -> dict[str, object]:
             continue
 
         api_key = str(item.get("api_key", ""))
+        api_keys = item.get("api_keys")
         base_url = str(item.get("base_url", "")).strip()
         if provider_type == "wavespeed":
             clients[name] = WavespeedClient(
                 api_key=api_key,
+                api_keys=api_keys,
                 base_url=base_url or "https://api.wavespeed.ai/api/v3",
                 max_429_retries=int(config.get("max_429_retries", 5)),
                 retry_429_delay=float(config.get("retry_429_delay", 2.0)),
@@ -448,13 +684,16 @@ def create_providers(config, context: Any = None) -> dict[str, object]:
         elif provider_type == "runninghub":
             clients[name] = RunningHubClient(
                 api_key=api_key,
+                api_keys=api_keys,
                 base_url=base_url or "https://www.runninghub.cn/openapi/v2",
+                data_dir=data_dir,
                 **item_shared,
                 **polling,
             )
         else:
             clients[name] = OpenAPIClient(
                 api_key=api_key,
+                api_keys=api_keys,
                 base_url=base_url or "https://api.openai.com/v1",
                 custom_headers=item.get("custom_headers") if isinstance(item.get("custom_headers"), dict) else None,
                 **item_shared,

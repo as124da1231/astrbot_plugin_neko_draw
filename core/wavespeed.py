@@ -18,6 +18,13 @@ from typing import Awaitable, Callable, Optional
 
 import aiohttp
 
+from .key_rotation import (
+    KeySwitchError,
+    is_switchable_status,
+    normalize_keys,
+    run_with_keys,
+)
+
 logger = logging.getLogger("neko_draw")
 
 TERMINAL_FAILED = ("failed", "cancelled", "timeout", "deleted", "error")
@@ -38,8 +45,10 @@ class WavespeedClient:
         max_concurrency: int = 2,
         max_429_retries: int = 5,
         retry_429_delay: float = 2.0,
+        api_keys: Optional[object] = None,
     ):
-        self.api_key = api_key
+        self.api_keys = normalize_keys(api_key, api_keys)
+        self.api_key = self.api_keys[0] if self.api_keys else ""
         self.base_url = base_url.rstrip("/")
         self.proxy = proxy
         self.poll_interval = poll_interval
@@ -60,9 +69,9 @@ class WavespeedClient:
             )
         return self._session
 
-    def _headers(self) -> dict:
+    def _headers(self, key: Optional[str] = None) -> dict:
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {key or self.api_key}",
             "Content-Type": "application/json",
         }
 
@@ -79,43 +88,47 @@ class WavespeedClient:
                 return True
         return False
 
-    async def submit(self, model: str, payload: dict) -> str:
+    async def submit(self, model: str, payload: dict, key: Optional[str] = None) -> str:
         """提交生成任务，返回任务 id。模型名拼在 URL 中。
 
-        遇 429 并发限制时指数退避重试（最多 max_429_retries 次）。
+        遇 429 并发限制：配了多个 Key 时直接换下一个 Key；只有一个 Key 时
+        指数退避重试（最多 max_429_retries 次）。
         """
         url = f"{self.base_url}/{model}"
         for attempt in range(self.max_429_retries + 1):
             try:
                 async with self.session.post(
-                    url, json=payload, headers=self._headers(), proxy=self.proxy
+                    url, json=payload, headers=self._headers(key), proxy=self.proxy
                 ) as resp:
                     data = await resp.json()
             except aiohttp.ClientError as e:
-                raise WavespeedError(f"提交请求失败: {e}") from e
+                raise KeySwitchError(f"提交请求失败: {e}") from e
             if resp.status == 200:
                 task_id = data.get("data", {}).get("id")
                 if not task_id:
                     raise WavespeedError(f"响应中未找到任务ID: {data}")
                 return task_id
             if self._is_concurrency_limit(resp.status, data):
-                if attempt < self.max_429_retries:
-                    delay = self.retry_429_delay * (2 ** attempt)
-                    logger.warning(
-                        "[IMAGE] WaveSpeed 并发限制(429)，第 %d/%d 次重试，"
-                        "等待 %.1fs 后重试",
-                        attempt + 1, self.max_429_retries, delay,
+                if len(self.api_keys) > 1 or attempt >= self.max_429_retries:
+                    raise KeySwitchError(
+                        f"提交失败 HTTP {resp.status}（并发限制）: {data}"
                     )
-                    await asyncio.sleep(delay)
-                    continue
-                raise WavespeedError(
-                    f"提交失败 HTTP {resp.status}（并发限制重试 {self.max_429_retries} 次仍失败）: {data}"
+                delay = self.retry_429_delay * (2 ** attempt)
+                logger.warning(
+                    "[IMAGE] WaveSpeed 并发限制(429)，第 %d/%d 次重试，"
+                    "等待 %.1fs 后重试",
+                    attempt + 1, self.max_429_retries, delay,
                 )
+                await asyncio.sleep(delay)
+                continue
+            if is_switchable_status(resp.status):
+                raise KeySwitchError(f"提交失败 HTTP {resp.status}: {data}")
             raise WavespeedError(f"提交失败 HTTP {resp.status}: {data}")
 
     async def poll(
         self,
         task_id: str,
+        key: Optional[str] = None,
         on_status: Optional[Callable[[str], Awaitable[None] | None]] = None,
     ) -> list[str]:
         """轮询直到终态，返回 outputs（图片 URL 列表）。"""
@@ -123,7 +136,7 @@ class WavespeedClient:
         while True:
             try:
                 async with self.session.get(
-                    url, headers=self._headers(), proxy=self.proxy
+                    url, headers=self._headers(key), proxy=self.proxy
                 ) as resp:
                     data = await resp.json()
             except aiohttp.ClientError as e:
@@ -144,17 +157,36 @@ class WavespeedClient:
                 raise WavespeedError(f"任务{status}: {err}")
             await asyncio.sleep(self.poll_interval)
 
-    async def generate(self, model: str, payload: dict) -> list[str]:
+    async def generate(
+        self, model: str, payload: dict, *,
+        on_task_id: Optional[Callable[[str], None]] = None,
+    ) -> list[str]:
         """提交并等待完成，返回图片 URL 列表。
 
-        受信号量约束：同时运行的任务数不超过 max_concurrency，
-        超出时排队等待（先到先得）。轮询受整体 timeout 约束。
+        配了多个 Key 时按“主 Key → 备用 Key”顺序提交，遇到认证/余额/限流/网络/
+        服务端错误自动换下一个 Key。受信号量约束；轮询受整体 timeout 约束。
+        ``on_task_id`` 在提交成功后回调本次任务 ID（用于历史/日志追溯）。
         """
         async with self._semaphore:
-            task_id = await self.submit(model, payload)
+            chosen: dict[str, str] = {}
+
+            async def run(key: Optional[str]):
+                task_id = await self.submit(model, payload, key)
+                chosen["key"] = key or ""
+                return task_id
+
+            try:
+                task_id = await run_with_keys(self.api_keys, run, logger, "WaveSpeed")
+            except KeySwitchError as exc:
+                raise WavespeedError(exc.message) from exc
+            if on_task_id is not None and task_id:
+                try:
+                    on_task_id(str(task_id))
+                except Exception:  # noqa: BLE001
+                    logger.debug("任务 ID 回调执行失败", exc_info=True)
             try:
                 return await asyncio.wait_for(
-                    self.poll(task_id), timeout=self.timeout
+                    self.poll(task_id, chosen.get("key") or None), timeout=self.timeout
                 )
             except asyncio.TimeoutError:
                 raise WavespeedError(

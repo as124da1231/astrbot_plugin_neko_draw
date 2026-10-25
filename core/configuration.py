@@ -32,7 +32,7 @@ def _coerce(value, field, path, strict):
         if not isinstance(value, bool) and strict:
             raise ValueError(f'{path} 必须是开关值')
         return value
-    if kind in ('string', 'str'):
+    if kind in ('string', 'str', 'text'):
         if not isinstance(value, str) and strict:
             raise ValueError(f'{path} 必须是文本')
         return value
@@ -98,6 +98,14 @@ def validate_config(config, schema):
             if isinstance(number, bool) or not isinstance(number, (int, float)) or number <= 0:
                 raise ValueError(f'{key} 必须大于 0')
 
+    # 下载重试参数：次数与初始等待允许为 0（关闭重试 / 立即重试），退避倍数不小于 1。
+    if int(result.get('download_retries', 3)) < 0:
+        raise ValueError('生成图下载重试次数不能小于 0')
+    if float(result.get('download_retry_delay', 1)) < 0:
+        raise ValueError('下载重试初始等待不能小于 0')
+    if float(result.get('download_retry_backoff', 2)) < 1:
+        raise ValueError('下载重试退避倍数不能小于 1')
+
     minimum = int(result.get('apng_maker_min_frames', 2))
     maximum = int(result.get('apng_maker_max_frames', 20))
     if minimum < 1 or maximum < 1 or minimum > maximum:
@@ -158,12 +166,67 @@ def validate_config(config, schema):
         duplicate_models_v2 = sorted({n for n in integrated_models if integrated_models.count(n) > 1})
         if duplicate_models_v2:
             raise ValueError(f'模型显示名称必须全局唯一，重复项：{"、".join(duplicate_models_v2)}')
+        # ComfyUI 工作流会投影为同名运行时模板（见 sync_comfyui_workflows），同样可以作为
+        # 默认文生图模型。若这里不纳入白名单，面板保存时会把用户选中的工作流默认模型清空。
+        for workflow in result.get('comfyui_workflows', []) or []:
+            if not isinstance(workflow, dict):
+                continue
+            if workflow.get('enabled', True) is False:
+                continue
+            if workflow.get('enabled_as_default', True) is False:
+                continue
+            alias = str(workflow.get('name', '')).strip()
+            if alias:
+                # 填了参考图字段的工作流属图生图（edit），否则属文生图（text）。
+                wf_mode = 'edit' if str(workflow.get('refer_field', '')).strip() else 'text'
+                available_models_by_mode[wf_mode].add(alias)
         for key, mode in (('default_text_model_v2', 'text'), ('default_edit_model_v2', 'edit')):
             selected = str(result.get(key, '')).strip()
             if selected and not selected.startswith('@astrbot:') and selected not in available_models_by_mode[mode]:
                 result[key] = ''
         from .providers import sync_image_provider_config
         sync_image_provider_config(result)
+
+    # ComfyUI 工作流也投影为运行时模型模板（幂等）；单独调用以覆盖无 image_providers 的情形。
+    from .providers import sync_comfyui_workflows
+    sync_comfyui_workflows(result)
+
+    # 校验 ComfyUI 工作流条目：名称/工作流 ID/提供商不能为空。
+    for index, item in enumerate(result.get('comfyui_workflows', []) or []):
+        if not isinstance(item, dict):
+            continue
+        if item.get('enabled', True) is False:
+            continue
+        label = str(item.get('name', '')).strip() or f'第 {index + 1} 个'
+        if not str(item.get('name', '')).strip():
+            raise ValueError(f'ComfyUI 工作流[{index + 1}]名称不能为空')
+        run_mode = str(item.get('run_mode') or 'workflow').strip().lower()
+        if run_mode in ('proxy', 'native', 'comfyui'):
+            # 原生代理不需要平台侧工作流 ID，但必须已经存过整份 API JSON
+            if not str(item.get('raw_json') or '').strip():
+                raise ValueError(f'ComfyUI 工作流「{label}」选择了原生代理，请先上传一次 API 格式工作流 JSON')
+        elif not str(item.get('workflow_id', '')).strip():
+            raise ValueError(f'ComfyUI 工作流「{label}」必须填写 RunningHub 工作流 ID')
+        if not str(item.get('provider', '')).strip():
+            raise ValueError(f'ComfyUI 工作流「{label}」必须选择模型提供商')
+
+    # 预设「默认模型」同样可以选 ComfyUI 工作流 / AstrBot 模型。旧实现只校验了
+    # 全局默认模型，导致预设保存后在面板里被悄悄清空、触发时回落到全局默认。
+    preset_models = []
+    for item in result.get('prompt', []) or []:
+        if isinstance(item, dict):
+            preset_model = str(item.get('model') or '').strip()
+            if preset_model:
+                preset_models.append(preset_model)
+    if preset_models:
+        available = {t.get('name') for t in result.get('model_templates', []) or [] if isinstance(t, dict)}
+        unknown = {m for m in preset_models if m not in available and not m.startswith('@astrbot:')}
+        if unknown:
+            for item in result.get('prompt', []) or []:
+                if isinstance(item, dict) and str(item.get('model') or '').strip() in unknown:
+                    # 与全局默认模型一致：模型已被删除时清空（UI 显示“跟随全局”），
+                    # 避免面板显示了一个实际不存在的模型。
+                    item['model'] = ''
 
     # 这些字段在运行时会被转换为以名称为键的字典。若允许重复，后面的项会静默
     # 覆盖前面的项，面板看到的配置与真正生效的配置就会不一致，因此在落盘前拒绝。

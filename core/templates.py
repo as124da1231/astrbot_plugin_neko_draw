@@ -15,6 +15,10 @@ from typing import Any, Optional
 _NUM_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
+# 这些参考图字段是“单张字符串”语义：即使下载了多张，实际只提交第一张。
+# 用于把“真实提交的参考图数量”如实写进历史记录。
+SCALAR_REFER_FIELDS = {"image", "init_image", "input_image"}
+
 def derive_provider(raw):
     """模型模板按名称选择用户配置的模型提供商。"""
     return str(raw.get("provider") or "").strip()
@@ -32,6 +36,7 @@ class ModelTemplate:
     max_refer_images: int = 10
     min_prompt_length: int = 0      # 提示词最小长度（0 表示不限制）
     params: dict = field(default_factory=dict)   # 提交参数（用户自定义）
+    workflow: dict = field(default_factory=dict)  # RunningHub ComfyUI 工作流映射（非空即走工作流接口）
 
 
 def normalize_param(value: Any) -> Any:
@@ -87,17 +92,29 @@ class TemplateManager:
                 min_pl = max(0, int(raw.get("min_prompt_length", 0)))
             except (TypeError, ValueError):
                 min_pl = 0
+            try:
+                fallback_order = int(raw.get("fallback_order", 0) or 0)
+            except (TypeError, ValueError):
+                # 配置层对模板内嵌字段是“能保存就保存”，这里必须容错：
+                # 否则一个非法 fallback_order 会让整个插件初始化/热重载直接失败。
+                fallback_order = 0
+            try:
+                enabled = bool(raw.get("enabled", True))
+                enabled_as_default = bool(raw.get("enabled_as_default", True))
+            except (TypeError, ValueError):
+                enabled, enabled_as_default = True, True
             self.templates[name] = ModelTemplate(
                 name=name,
                 model=model,
                 provider=derive_provider(raw),
-                enabled=bool(raw.get("enabled", True)),
-                enabled_as_default=bool(raw.get("enabled_as_default", True)),
-                fallback_order=int(raw.get("fallback_order", 0) or 0),
+                enabled=enabled,
+                enabled_as_default=enabled_as_default,
+                fallback_order=fallback_order,
                 refer_field=str(raw.get("refer_field", "")).strip(),
                 max_refer_images=max_ref,
                 min_prompt_length=min_pl,
                 params=_parse_params(raw.get("params")),
+                workflow=raw.get("workflow") if isinstance(raw.get("workflow"), dict) else {},
             )
 
     def get(self, name: str) -> Optional[ModelTemplate]:
@@ -142,7 +159,12 @@ def build_payload(
     - 参考图：按模板 refer_field 字段名注入
     """
     payload: dict = {k: normalize_param(v) for k, v in template.params.items()}
-    for key, value in (user_params or {}).items():
+    user_params = dict(user_params or {})
+    if template.workflow:
+        # 工作流模板允许用中文别名指定高级用途（如 --画师、--重绘）
+        from .comfyui_workflow import normalize_role_aliases
+        user_params = normalize_role_aliases(user_params)
+    for key, value in user_params.items():
         if key == "model":
             continue
         payload[key] = normalize_param(value)
@@ -150,8 +172,11 @@ def build_payload(
     if refer_uris and template.refer_field:
         # 主流兼容接口的 image/init_image/input_image 是单图字符串；
         # images 等复数字段保留数组。模型配置仍可自行改成其他字段。
-        scalar_fields = {"image", "init_image", "input_image"}
         payload[template.refer_field] = (
-            refer_uris[0] if template.refer_field.lower() in scalar_fields else refer_uris
+            refer_uris[0] if template.refer_field.lower() in SCALAR_REFER_FIELDS else refer_uris
         )
+    if template.workflow:
+        # 走 RunningHub ComfyUI 工作流接口：把映射随 payload 传给客户端。
+        # 放在最后，避免用户的 --参数 覆盖内部保留键。
+        payload["_comfyui"] = dict(template.workflow)
     return payload

@@ -8,6 +8,8 @@ from typing import Optional
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import At, Image
+
+from .config_store import get_bool, get_int
 try:
     from PIL import Image as PILImage
 except ImportError:
@@ -92,15 +94,28 @@ class OutputService:
             return default_frame
         return None
 
-    def _wrap_apng(self, image_paths: list[str]) -> list[str]:
+    def _wrap_apng(
+        self,
+        image_paths: list[str],
+        enabled: Optional[bool] = None,
+        reference_images: Optional[list] = None,
+    ) -> list[str]:
         """将生成的图片包装成两帧 APNG 动图。
 
         第一帧：配置的首帧图片（等比缩放+居中+白底填充到生成图尺寸）
         第二帧：生成的图片
         返回 APNG 文件路径列表。若未开启、Pillow 不可用、首帧路径无效，
         则直接返回原图路径列表。
+
+        enabled 为 None 时读取全局配置 enable_apng_wrap；否则使用传入值
+        （供预设按需强制开启/关闭 APNG 包装）。
+        ``reference_images`` 接受但暂未参与合成 —— 保留它，是为了让所有调用点
+        （即时发送 / 后台补发 / 历史找回）用同一套参数，以后要加“参考图也放进
+        动图”时不必再回头改每个调用方。
         """
-        if not bool(self.conf.get("enable_apng_wrap", False)):
+        if enabled is None:
+            enabled = bool(self.conf.get("enable_apng_wrap", False))
+        if not enabled:
             return image_paths
         if PILImage is None:
             logger.warning("[neko_draw] Pillow 未安装，APNG 功能已禁用")
@@ -111,10 +126,12 @@ class OutputService:
             logger.warning("[neko_draw] 未找到 APNG 第一帧图片（含内置默认图），APNG 功能已禁用")
             return image_paths
 
-        first_duration = int(self.conf.get("drawing_first_frame_duration", 100))
-        second_duration = int(self.conf.get("drawing_second_frame_duration", 20000))
-        loop = int(self.conf.get("drawing_apng_loop", 0))
-        optimize = bool(self.conf.get("drawing_apng_optimize", True))
+        # 走 get_int/get_bool：配置里是空串或 null 时回落到默认值。
+        # 以前直接 int(...)，配置一旦是空值就会抛异常，导致整条 APNG 包装链路静默失败。
+        first_duration = get_int(self.conf, "drawing_first_frame_duration", 100)
+        second_duration = get_int(self.conf, "drawing_second_frame_duration", 20000)
+        loop = get_int(self.conf, "drawing_apng_loop", 0)
+        optimize = get_bool(self.conf, "drawing_apng_optimize", True)
 
         result_paths = []
         try:
@@ -196,8 +213,9 @@ class OutputService:
         """将多张图片按消息顺序合成为 APNG，并返回生成文件路径。"""
         if PILImage is None:
             raise RuntimeError("Pillow 未安装，无法制作 APNG")
-        max_frames = int(self.conf.get("apng_maker_max_frames", 20))
-        max_dimension = int(self.conf.get("apng_maker_max_dimension", 2048))
+        # 同 _wrap_apng：用 get_int，空值回落默认，避免配置为空时整条 APNG 指令失败
+        max_frames = get_int(self.conf, "apng_maker_max_frames", 20)
+        max_dimension = get_int(self.conf, "apng_maker_max_dimension", 2048)
         if not 2 <= len(image_paths) <= max_frames:
             raise ValueError(f"图片数量必须为 2～{max_frames} 张")
         if not 100 <= int(duration_ms) <= 60000:
@@ -335,7 +353,7 @@ class OutputService:
         components = []
         at_key = self._profile_key(profile, "enable_at_sender")
         if bool(self.conf.get(at_key, False)) and event.get_group_id():
-            components.append(At(event.get_sender_id()))
+            components.append(At(qq=str(event.get_sender_id())))
         components.extend([Image.fromFileSystem(p) for p in image_paths])
         return components
 
@@ -390,11 +408,13 @@ class OutputService:
         self, event: AstrMessageEvent, image_paths: list[str], summary: str = "",
         profile: str = "drawing",
     ) -> bool:
-        """直接调用 OneBot v11 原始 API 发送合并转发消息。
+        """通过 AstrBot 内置 Node/Nodes 组件发送合并转发消息。
 
-        把图片打包成 QQ 合并转发（聊天记录）卡片发出。
-        若传入 summary，则合并转发节点内的图片消息段会带上 summary
-        字段（图片外显金句），实现外显+合并转发同时生效。
+        不手拼 OneBot JSON（旧版手拼 file:// 路径在 snowluma 等独立
+        容器网关上会 ENOENT，QQ 客户端读不到 AstrBot 容器内的文件），
+        而是把图片包装成 Node/Nodes 组件交给 AstrBot 官方序列化器：
+        本地图片会自动转成 base64:// 传输，NapCat 与 snowluma 均可用。
+        summary 外显金句在此路径不再注入（单图外显路径仍保留）。
         仅 aiocqhttp 平台支持，其他平台返回 False 由调用方回退。
         """
         try:
@@ -404,55 +424,31 @@ class OutputService:
         if platform != "aiocqhttp":
             return False
 
+        try:
+            from astrbot.api.message_components import Node, Nodes
+            from astrbot.core.message.message_event_result import MessageChain
+        except ImportError:
+            return False
+
         group_id = event.get_group_id()
         user_id = event.get_sender_id()
         bot_id = event.get_self_id()
 
-        # 构建节点内容：图片（可选带 summary 外显金句）
+        # 构建节点内容：图片（可选 @ 触发者）
         content = []
-        # 若开启了 @ 触发者且是群聊，在节点内容最前面插入 at 消息段
         at_key = self._profile_key(profile, "enable_at_sender")
         if bool(self.conf.get(at_key, False)) and group_id:
-            content.append({"type": "at", "data": {"qq": str(user_id)}})
-        for p in image_paths:
-            img_data = {"file": f"file://{p}"}
-            if summary:
-                img_data["summary"] = summary
-            content.append({"type": "image", "data": img_data})
+            content.append(At(qq=str(event.get_sender_id())))
+        content.extend(Image.fromFileSystem(p) for p in image_paths)
 
         nickname_key = self._profile_key(profile, "forward_node_name")
         nickname = str(self.conf.get(nickname_key, "")).strip()
         if not nickname:
             nickname = "猫娘画图"
 
-        forward_msg = [
-            {
-                "type": "node",
-                "data": {
-                    "user_id": int(bot_id) if bot_id else 10000,
-                    "nickname": nickname,
-                    "content": content,
-                },
-            }
-        ]
-
+        node = Node(uin=str(bot_id) if bot_id else "10000", name=nickname, content=content)
         try:
-            bot_api = getattr(event.bot, "api", None)
-            if bot_api is None:
-                logger.warning("[neko_draw] event.bot.api 不存在，无法发送合并转发")
-                return False
-            if group_id:
-                await bot_api.call_action(
-                    "send_group_forward_msg",
-                    group_id=int(group_id),
-                    messages=forward_msg,
-                )
-            else:
-                await bot_api.call_action(
-                    "send_private_forward_msg",
-                    user_id=int(user_id),
-                    messages=forward_msg,
-                )
+            await event.send(MessageChain([Nodes([node])]))
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning(

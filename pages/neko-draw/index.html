@@ -1,11 +1,11 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN" data-theme="forest">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>猫娘画图 控制台</title>
-  <link rel="stylesheet" href="./assets/style.css?v=2.2.7">
+  <link rel="stylesheet" href="./assets/style.css?v=4.0.3">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -25,6 +25,7 @@
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v5h14v-5"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12m0 0 5-5m-5 5-5-5M5 20h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
   </svg>
 
   <div class="app-shell">
@@ -44,8 +45,11 @@
         <button class="nav-item" type="button" data-page="apng">
   <svg class="icon icon-sparkles" width="19" height="19" aria-hidden="true"><use href="#i-sparkles"></use></svg><span>APNG 作品</span><span class="nav-index">04</span>
 </button>
+        <button class="nav-item" type="button" data-page="textlab">
+  <svg class="icon icon-sparkles" width="19" height="19" aria-hidden="true"><use href="#i-sparkles"></use></svg><span>文字加工</span><span class="nav-index">05</span>
+</button>
       </nav>
-      <div class="sidebar-note"><span class="live-dot"></span><div><strong>猫娘画图</strong><small>已连接 · v2.2.7</small></div></div>
+      <div class="sidebar-note"><span class="live-dot"></span><div><strong>猫娘画图</strong><small id="sidebar-version">猫娘画图插件</small></div></div>
     </aside>
     <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="关闭菜单"></button>
 
@@ -74,46 +78,98 @@
 
       <div class="content">
         <section class="page" id="page-history" data-title="生成历史">
-          <div class="hero"><div><span class="eyebrow">IMAGE LAB / HISTORY</span><h1>让每一次创作，<em>都有迹可循。</em></h1><p>回看作品、追踪状态，清晰掌握每一次生成任务。</p></div><div class="hero-number">03</div></div>
-          <div class="stat-grid" id="stats">
+                    <div class="stat-grid" id="stats">
             <article class="stat-card"><span>总生成次数</span><strong data-stat="total">—</strong><small>ALL CREATIONS</small></article>
             <article class="stat-card success"><span>成功生成</span><strong data-stat="success">—</strong><small>COMPLETED</small></article>
             <article class="stat-card failed"><span>失败任务</span><strong data-stat="failed">—</strong><small>NEEDS ATTENTION</small></article>
             <article class="stat-card accent"><span>成功率</span><strong data-stat="rate">—</strong><small>SUCCESS RATE</small></article>
           </div>
           <div class="panel filters-panel">
-            <div class="panel-title"><div><span class="section-index">03—A</span><h2>筛选作品</h2></div><button class="text-button" id="reset-filters">重置条件</button></div>
-            <form class="filter-grid" id="history-filters">
+            <div class="panel-title"><div><span class="section-index">03—A</span><h2>筛选作品</h2></div><div class="filter-quick"><button class="text-button" type="button" data-range="today">今天</button><button class="text-button" type="button" data-range="7">近 7 天</button><button class="text-button" type="button" data-range="30">近 30 天</button><button class="text-button" id="reset-filters" type="button">重置条件</button></div></div>
+            <form class="filter-grid filter-grid-wide" id="history-filters">
+              <label class="is-wide"><span>关键词</span><input name="keyword" placeholder="提示词 / 任务 ID / 用户 ID / 模型 / 失败原因"></label>
               <label><span>用户 ID</span><input name="user_id" placeholder="输入用户 ID"></label>
-              <label><span>状态</span><select name="status"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+              <label><span>模型模板</span><select name="model_template" id="history-model-filter"><option value="">全部模型</option></select></label>
+              <label><span>状态</span><select name="status"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option><option value="pending">排队中</option></select></label>
+              <label><span>排序</span><select name="order"><option value="time_desc">最新优先</option><option value="time_asc">最早优先</option><option value="duration_desc">耗时从长到短</option><option value="duration_asc">耗时从短到长</option></select></label>
               <label><span>起始日期</span><input name="start_date" type="date"></label>
               <label><span>结束日期</span><input name="end_date" type="date"></label>
               <button class="primary-button filter-submit" type="submit"><svg class="icon icon-search" width="17" height="17" aria-hidden="true"><use href="#i-search"></use></svg>查询</button>
             </form>
           </div>
           <div class="panel history-panel">
-            <div class="panel-title"><div><span class="section-index">03—B</span><h2>生成记录</h2><span class="count-pill" id="history-count">0 条</span></div><div class="panel-actions"><button class="icon-button" id="refresh-history" title="刷新"><svg class="icon icon-refresh" width="20" height="20" aria-hidden="true"><use href="#i-refresh"></use></svg></button><button class="danger-button" id="clear-history"><svg class="icon icon-trash" width="16" height="16" aria-hidden="true"><use href="#i-trash"></use></svg>清空历史</button></div></div>
-            <div class="table-wrap"><table class="history-table"><thead><tr><th>时间 / ID</th><th>生成提示词</th><th>模型 / 模型提供商</th><th>耗时</th><th>状态</th><th class="right">操作</th></tr></thead><tbody id="history-body"></tbody></table><div class="empty-state" id="history-empty"><div class="empty-orbit"><svg class="icon icon-sparkles" width="28" height="28" aria-hidden="true"><use href="#i-sparkles"></use></svg></div><h3>还没有生成记录</h3><p>完成第一次图片生成后，记录会显示在这里。</p></div></div>
+            <div class="panel-title"><div><span class="section-index">03—B</span><h2>生成记录</h2><span class="count-pill" id="history-count">0 条</span></div><div class="panel-actions"><label class="page-size-field" title="每页显示多少条记录"><span>每页</span><select id="history-page-size"><option value="10">10 条</option><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></label><div class="layout-switch" id="history-layout-switch" role="group" aria-label="排列方式"><button class="layout-button is-active" type="button" data-layout="table" title="列表：一行一条">列表</button><button class="layout-button" type="button" data-layout="grid4" title="缩略图：一行 4 个">4 列</button><button class="layout-button" type="button" data-layout="grid6" title="缩略图：一行 6 个">6 列</button></div><button class="icon-button" id="refresh-history" title="刷新"><svg class="icon icon-refresh" width="20" height="20" aria-hidden="true"><use href="#i-refresh"></use></svg></button><button class="danger-button" id="clear-history"><svg class="icon icon-trash" width="16" height="16" aria-hidden="true"><use href="#i-trash"></use></svg>清空历史</button></div></div>
+            <div class="table-wrap" id="history-table-wrap"><table class="history-table"><thead><tr><th>时间 / ID</th><th>生成提示词</th><th>耗时</th><th>状态</th><th class="right">操作</th></tr></thead><tbody id="history-body"></tbody></table></div>
+            <div class="history-grid-wrap" id="history-grid-wrap" hidden><div class="history-grid" id="history-grid"></div></div>
+            <div class="empty-state" id="history-empty"><div class="empty-orbit"><svg class="icon icon-sparkles" width="28" height="28" aria-hidden="true"><use href="#i-sparkles"></use></svg></div><h3>还没有生成记录</h3><p>完成第一次图片生成后，记录会显示在这里。</p></div>
             <div class="pagination"><span id="page-summary">第 1 页</span><div><button class="soft-button" id="prev-page">上一页</button><button class="soft-button" id="next-page">下一页</button></div></div>
           </div>
         </section>
 
         <section class="page" id="page-apng" data-title="APNG 作品">
-          <div class="hero"><div><span class="eyebrow">IMAGE LAB / APNG</span><h1>只留原图，<em>成品不落盘。</em></h1><p>查看制作 APNG 时使用的多张原图；动画成品在发送完成后自动清理。</p></div><div class="hero-number">04</div></div>
-          <div class="panel history-panel">
+                    <div class="panel history-panel">
             <div class="panel-title"><div><span class="section-index">04—A</span><h2>APNG 制作记录</h2><span class="count-pill" id="apng-count">0 条</span></div><div class="panel-actions"><button class="icon-button" id="refresh-apng" title="刷新"><svg class="icon icon-refresh" width="20" height="20" aria-hidden="true"><use href="#i-refresh"></use></svg></button><button class="danger-button" id="clear-apng"><svg class="icon icon-trash" width="16" height="16" aria-hidden="true"><use href="#i-trash"></use></svg>清空作品</button></div></div>
             <div class="table-wrap"><table class="apng-table"><thead><tr><th>时间 / ID</th><th>帧数</th><th>每帧间隔</th><th>循环</th><th>原图数量</th><th class="right">操作</th></tr></thead><tbody id="apng-body"></tbody></table><div class="empty-state" id="apng-empty"><div class="empty-orbit"><svg class="icon icon-sparkles" width="28" height="28" aria-hidden="true"><use href="#i-sparkles"></use></svg></div><h3>还没有 APNG 记录</h3><p>成品发送后自动清理；这里仅保存制作记录和输入原图。</p></div></div>
             <div class="pagination"><span id="apng-page-summary">第 1 页</span><div><button class="soft-button" id="apng-prev">上一页</button><button class="soft-button" id="apng-next">下一页</button></div></div>
           </div>
         </section>
 
-        <section class="page is-active" id="page-providers" data-title="模型提供商">
-          <div class="hero"><div><span class="eyebrow">IMAGE LAB / PROVIDERS</span><h1>连接模型，<em>然后开始创作。</em></h1><p>集中管理 API 连接、模型列表和每个模型的独立参数。</p></div><div class="hero-number">01</div></div>
+        <section class="page" id="page-textlab" data-title="文字加工">
+          <div class="config-layout lab-layout">
+            <div class="config-content lab-content">
+
+              <section class="config-section is-active" data-lab-section="command" aria-label="文字加工配置">
+                <div class="section-intro">这里只放全局设置；单条指令没有单独指定的项，按这里的设置走。</div>
+                <div class="config-content" id="lab-global-config"></div>
+              </section>
+
+              <section class="config-section" data-lab-section="expand" aria-label="扩写指令编辑">
+                <div class="section-intro">点一下卡片即可展开编辑；没单独指定提供商和模型的指令，按「文字加工配置」的设置走。</div>
+                <div class="panel command-panel" id="expand-panel"></div>
+              </section>
+
+              <section class="config-section" data-lab-section="extract" aria-label="提取指令编辑">
+                <div class="section-intro">点一下卡片即可展开编辑；图片会一起发给模型，用户补充的说明接在模板末尾。</div>
+                <div class="panel command-panel" id="extract-panel"></div>
+              </section>
+
+              <section class="config-section" data-lab-section="log" aria-label="文字加工历史">
+                <div class="section-intro">扩写与提取的调用记录，点记录可以看提供商、模型和输入输出。</div>
+                <div class="stat-grid" id="llm-stats">
+                  <article class="stat-card"><span>调用总次数</span><strong data-llm-stat="total">—</strong><small>ALL CALLS</small></article>
+                  <article class="stat-card"><span>成功</span><strong data-llm-stat="success">—</strong><small>SUCCESS</small></article>
+                  <article class="stat-card"><span>失败</span><strong data-llm-stat="failed">—</strong><small>FAILED</small></article>
+                  <article class="stat-card"><span>平均耗时</span><strong data-llm-stat="avg_ms">—</strong><small>AVG LATENCY</small></article>
+                </div>
+                <div class="panel filters-panel">
+                  <div class="panel-title"><div><span class="section-index">05—A</span><h2>筛选调用</h2></div><button class="text-button" id="reset-llm-filters">重置条件</button></div>
+                  <form class="filter-grid" id="llm-filters">
+                    <label><span>指令类型</span><select name="section"><option value="">全部</option><option value="expand">扩写</option><option value="extract">提取</option></select></label>
+                    <label><span>来源</span><select name="source"><option value="">全部来源</option><option value="user">用户指令</option><option value="bot">生图预处理</option></select></label>
+                    <label><span>状态</span><select name="status"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+                    <label><span>起始日期</span><input name="start_date" type="date"></label>
+                    <label><span>结束日期</span><input name="end_date" type="date"></label>
+                    <button class="primary-button filter-submit" type="submit"><svg class="icon icon-search" width="17" height="17" aria-hidden="true"><use href="#i-search"></use></svg>查询</button>
+                  </form>
+                </div>
+                <div class="panel history-panel">
+                  <div class="panel-title"><div><span class="section-index">05—B</span><h2>调用记录</h2><span class="count-pill" id="llm-count">0 条</span></div><div class="panel-actions"><button class="icon-button" id="refresh-llm-history" title="刷新"><svg class="icon icon-refresh" width="20" height="20" aria-hidden="true"><use href="#i-refresh"></use></svg></button><button class="danger-button" id="clear-llm-history"><svg class="icon icon-trash" width="16" height="16" aria-hidden="true"><use href="#i-trash"></use></svg>清空历史</button></div></div>
+                  <div class="table-wrap"><table class="history-table"><thead><tr><th>时间 / ID</th><th>来源 / 指令 · 输入</th><th>耗时</th><th>状态</th><th class="right">操作</th></tr></thead><tbody id="llm-history-body"></tbody></table><div class="empty-state" id="llm-history-empty"><div class="empty-orbit"><svg class="icon icon-history" width="28" height="28" aria-hidden="true"><use href="#i-history"></use></svg></div><h3>还没有调用记录</h3><p>在群里用一次扩写或提取指令，或让生图跑一次预处理，这里就会出现记录。</p></div></div>
+                  <div class="pagination"><span id="llm-page-summary">第 1 页</span><div><button class="soft-button" id="llm-prev-page">上一页</button><button class="soft-button" id="llm-next-page">下一页</button></div></div>
+                </div>
+              </section>
+
+            </div>
+            <button class="category-launcher" id="lab-category-launcher" type="button" aria-haspopup="true" aria-expanded="false"><svg class="icon icon-settings" width="17" height="17" aria-hidden="true"><use href="#i-settings"></use></svg><span class="category-launcher-label">文字加工配置</span><svg class="icon icon-chevron" width="15" height="15" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+            <nav class="config-nav" id="lab-category-nav" aria-label="文字加工页面"></nav>
+          </div>
         </section>
 
+        <section class="page is-active" id="page-providers" data-title="模型提供商">
+                  </section>
+
         <section class="page" id="page-config" data-title="插件配置">
-          <div class="hero"><div><span class="eyebrow">IMAGE LAB / SETTINGS</span><h1>让创作，<em>按你的方式发生。</em></h1><p>管理默认模型、提示词和消息发送策略。</p></div><div class="hero-number">02</div></div>
-        </section>
+                  </section>
 
         <footer><span>WAVESPEED · RUNNINGHUB · OPENAI</span><span>留一点空间，给想象。</span></footer>
       </div>
@@ -126,10 +182,11 @@
     <button class="floating-save" id="global-save" type="button" data-save-config disabled title="保存并重载" aria-label="保存并重载"><svg class="icon icon-save" width="20" height="20" aria-hidden="true"><use href="#i-save"></use></svg></button>
   </div>
 
+  <button class="nav-launcher" id="nav-launcher" type="button" aria-label="打开导航" aria-expanded="false"><svg class="icon icon-menu" width="22" height="22" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+
+
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
   <dialog class="modal" id="detail-modal"><button class="modal-close" data-close-modal aria-label="关闭"><svg class="icon icon-close" width="20" height="20" aria-hidden="true"><use href="#i-close"></use></svg></button><div id="detail-content"></div></dialog>
-  <dialog class="modal confirm-modal" id="confirm-modal"><div class="confirm-icon">!</div><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="modal-actions"><button class="soft-button" data-confirm="cancel">取消</button><button class="danger-button" data-confirm="ok">确认</button></div></dialog>
-  <input type="file" id="file-picker" hidden>
-  <script type="module" src="./assets/app.js?v=2.2.7"></script>
+  <script type="module" src="./assets/app.js?v=4.0.3"></script>
 </body>
 </html>

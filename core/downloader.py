@@ -6,6 +6,7 @@
 - 把生成结果 URL 下载到本地，供 AstrBot 发送
 """
 import base64
+import binascii
 import mimetypes
 import os
 import re
@@ -23,10 +24,22 @@ logger = logging.getLogger("neko_draw")
 
 
 class Downloader:
-    def __init__(self, save_dir: str | Path, proxy: Optional[str] = None):
+    def __init__(
+        self,
+        save_dir: str | Path,
+        proxy: Optional[str] = None,
+        *,
+        retries: int = 3,
+        retry_delay: float = 1.0,
+        retry_backoff: float = 2.0,
+    ):
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.proxy = proxy
+        # 下载失败自动重试：retries 为「首次失败后额外重试次数」，0 表示不重试。
+        self.retries = max(0, int(retries))
+        self.retry_delay = max(0.0, float(retry_delay))
+        self.retry_backoff = max(1.0, float(retry_backoff))
         self._session: Optional[aiohttp.ClientSession] = None
 
     @property
@@ -36,6 +49,45 @@ class Downloader:
                 timeout=aiohttp.ClientTimeout(total=120)
             )
         return self._session
+
+    async def _sleep_backoff(self, attempt: int, label: str, reason: str) -> None:
+        delay = self.retry_delay * (self.retry_backoff ** attempt)
+        if delay > 0:
+            logger.info("%s 第 %d 次重试，%.1fs 后重试（%s）", label, attempt + 1, delay, reason)
+            await asyncio.sleep(delay)
+
+    async def _fetch_bytes(
+        self, url: str, *, proxy: Optional[str], label: str
+    ) -> Optional[tuple[bytes, str]]:
+        """下载 URL 原始字节，失败时按配置自动重试（指数退避）。
+
+        返回 ``(raw, declared_content_type)``；重试耗尽仍失败返回 ``None``。
+        """
+        attempts = self.retries + 1
+        for attempt in range(attempts):
+            try:
+                async with self.session.get(
+                    url,
+                    proxy=proxy if proxy is not None else self.proxy,
+                    allow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 NekoDraw/2.2"},
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning("%s失败 HTTP %s: %s", label, resp.status, str(url)[:240])
+                        if attempt < attempts - 1:
+                            await self._sleep_backoff(attempt, label, f"HTTP {resp.status}")
+                            continue
+                        return None
+                    raw = await resp.read()
+                    declared = resp.headers.get("Content-Type", "").split(";")[0].lower()
+                    return raw, declared
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                logger.warning("%s异常 %s: %s", label, type(exc).__name__, str(url)[:240])
+                if attempt < attempts - 1:
+                    await self._sleep_backoff(attempt, label, type(exc).__name__)
+                    continue
+                return None
+        return None
 
     def _ext(self, mime: str) -> str:
         return {
@@ -88,19 +140,10 @@ class Downloader:
                 url = url[1:]
         if os.path.isfile(url):
             return self.to_data_uri(url)
-        try:
-            async with self.session.get(
-                url, proxy=self.proxy, allow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 NekoDraw/2.2"},
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning("参考图下载失败 HTTP %s: %s", resp.status, str(url)[:240])
-                    return None
-                raw = await resp.read()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            logger.warning("参考图下载异常 %s: %s", type(exc).__name__, str(url)[:240])
+        fetched = await self._fetch_bytes(url, proxy=self.proxy, label="参考图下载")
+        if fetched is None:
             return None
-        declared = resp.headers.get("Content-Type", "").split(";")[0].lower()
+        raw, declared = fetched
         detected = self._detect_image_mime(raw)
         mime = detected or (declared if declared.startswith("image/") else None)
         if not mime:
@@ -115,8 +158,11 @@ class Downloader:
             return None
         mime = m.group("mime")
         try:
-            raw = base64.b64decode(m.group("data"))
-        except (base64.binascii.Error, ValueError):
+            # 先补齐 padding，再严格解码：脏数据直接返回 None，而不是解出乱码
+            data = m.group("data")
+            data += "=" * (-len(data) % 4)
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
             return None
         path = self.save_dir / f"img_{uuid.uuid4().hex[:12]}{self._ext(mime)}"
         path.write_bytes(raw)
@@ -126,18 +172,13 @@ class Downloader:
         """下载图片到本地文件，返回路径。支持 http(s) URL 和 data URI。"""
         if url.startswith("data:"):
             return self._save_data_uri(url)
-        try:
-            async with self.session.get(url, proxy=proxy if proxy is not None else self.proxy, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0 NekoDraw/1.0"}) as resp:
-                if resp.status != 200:
-                    logger.warning("生成图片下载失败 HTTP %s: %s", resp.status, str(url)[:240])
-                    return None
-                raw = await resp.read()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            logger.warning("生成图片下载异常 %s: %s", type(exc).__name__, str(url)[:240])
+        fetched = await self._fetch_bytes(url, proxy=proxy, label="生成图片下载")
+        if fetched is None:
             return None
-        declared = resp.headers.get("Content-Type", "").split(";")[0].lower()
+        raw, declared = fetched
         detected = self._detect_image_mime(raw)
-        mime = declared if declared.startswith("image/") else detected
+        # 魔数优先：CDN 经常给错误页套 image/png，按声明存会把 HTML 当图片发出去
+        mime = detected or (declared if declared.startswith("image/") else None)
         if not mime:
             logger.warning("生成结果不是图片（Content-Type=%s，大小=%s）: %s", declared or "unknown", len(raw), str(url)[:240])
             return None

@@ -8,14 +8,57 @@
       "image_provider": {
         "name": "模型提供商",
         "items": {
-          "name": {"type": "string", "default": "", "description": "提供商名称", "hint": "必须唯一，例如 硅基流动"},
-          "api_key": {"type": "string", "default": "", "description": "API Key", "secret": true},
-          "base_url": {"type": "string", "default": "https://api.openai.com/v1", "description": "API Base URL", "hint": "填写根地址，例如 https://api.siliconflow.cn/v1；模型请求路径在模型设置中管理"},
-          "enabled": {"type": "bool", "default": true, "description": "启用提供商"},
-          "timeout": {"type": "int", "default": 300, "description": "超时时间", "hint": "仅对该提供商生效，单位为秒"},
-          "proxy": {"type": "string", "default": "", "description": "代理地址", "hint": "仅对该提供商的 API 请求生效"},
-          "custom_headers": {"type": "object", "default": {}, "description": "自定义请求头"},
-          "models": {"type": "list", "default": [], "description": "模型列表"}
+          "name": {
+            "type": "string",
+            "default": "",
+            "description": "提供商名称",
+            "hint": "必须唯一，例如 硅基流动"
+          },
+          "api_key": {
+            "type": "string",
+            "default": "",
+            "description": "API Key",
+            "secret": true
+          },
+          "api_keys": {
+            "type": "list",
+            "default": [],
+            "description": "备用 API Key",
+            "hint": "可选。主 Key 失败时按顺序自动切换（余额不足、Key 失效、限流、网络错误、服务端错误）。多个 Key 需来自不同账号才共享不到余额"
+          },
+          "base_url": {
+            "type": "string",
+            "default": "https://api.openai.com/v1",
+            "description": "API Base URL",
+            "hint": "填写根地址，例如 https://api.siliconflow.cn/v1；模型请求路径在模型设置中管理"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用提供商"
+          },
+          "timeout": {
+            "type": "int",
+            "default": 600,
+            "description": "超时时间",
+            "hint": "仅对该提供商生效，单位为秒；超过后任务转入后台继续等待并自动补发原图"
+          },
+          "proxy": {
+            "type": "string",
+            "default": "",
+            "description": "代理地址",
+            "hint": "仅对该提供商的 API 请求生效"
+          },
+          "custom_headers": {
+            "type": "object",
+            "default": {},
+            "description": "自定义请求头"
+          },
+          "models": {
+            "type": "list",
+            "default": [],
+            "description": "模型列表"
+          }
         }
       }
     }
@@ -32,37 +75,189 @@
     "hint": "从插件内已启用模型或 AstrBot 已有模型中选择",
     "default": ""
   },
+  "comfyui_workflows": {
+    "type": "template_list",
+    "description": "ComfyUI 工作流（RunningHub）",
+    "hint": "通过 RunningHub 云端的 ComfyUI 工作流 API 出图。请在下方上传“API 格式”的工作流 JSON，自动识别参数并确认用途；工作流复用上方 RunningHub 提供商的 Key 与地址。",
+    "default": [],
+    "templates": {
+      "comfyui_workflow": {
+        "name": "ComfyUI 工作流",
+        "items": {
+          "name": {
+            "type": "string",
+            "default": "",
+            "description": "模板名称",
+            "hint": "供 --model 与默认模型选择使用，必须全局唯一"
+          },
+          "provider": {
+            "type": "string",
+            "default": "",
+            "description": "模型提供商",
+            "hint": "选择一个 RunningHub 提供商"
+          },
+          "workflow_id": {
+            "type": "string",
+            "default": "",
+            "description": "RunningHub 工作流 / AI 应用 ID",
+            "hint": "工作流页取 /workflow/<id>；AI 应用页取 /ai-detail/<id>，均填数字 ID"
+          },
+          "run_mode": {
+            "type": "string",
+            "default": "workflow",
+            "description": "调用接口",
+            "hint": "workflow=工作流接口；ai_app=AI 应用接口（ID 来自 /ai-detail/ 页面）；proxy=原生代理，不用 ID，直接把已上传的整份 API JSON 提交到 /proxy/{KEY}/prompt"
+          },
+          "raw_json": {
+            "type": "string",
+            "default": "",
+            "description": "工作流 JSON 文件名",
+            "hint": "由插件上传时自动写入（plugin_data/neko_draw_workflows 下的文件名），用于「下载当前工作流」和原生代理提交，请勿手改"
+          },
+          "instance_type": {
+            "type": "string",
+            "default": "default",
+            "description": "实例类型",
+            "options": [
+              "default",
+              "plus",
+              "ultra"
+            ],
+            "hint": "default 默认 / plus 48G 显存 / ultra 84G 显存；显存档位选低了会报“未找到任务用户 API 实例”"
+          },
+          "use_personal_queue": {
+            "type": "bool",
+            "default": false,
+            "description": "使用个人队列"
+          },
+          "enabled_as_default": {
+            "type": "bool",
+            "default": true,
+            "description": "允许作为默认模型"
+          },
+          "fallback_order": {
+            "type": "int",
+            "default": 30,
+            "description": "回退优先级",
+            "hint": "数字越小优先级越高"
+          },
+          "refer_field": {
+            "type": "string",
+            "default": "",
+            "description": "参考图字段名",
+            "hint": "文生图留空；图生图工作流填写 LoadImage 的 image 字段"
+          },
+          "max_refer_images": {
+            "type": "int",
+            "default": 0,
+            "description": "参考图数量上限"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用工作流"
+          },
+          "nodes": {
+            "type": "list",
+            "default": [],
+            "description": "参数映射",
+            "hint": "由插件管理页上传工作流 JSON 后自动识别生成，通常无需手工编辑"
+          }
+        }
+      }
+    }
+  },
   "prompt": {
     "type": "template_list",
     "description": "预设提示词",
-    "hint": "每项左边填触发词，右边填提示词模板。{{user_text}} 会被消息文本替换。默认 nd=文生图，nde=编辑模式（--model edit 指向默认编辑模板）",
+    "hint": "每个预设 = 触发词 + 提示词模板 + 默认模型 + 固定参数。可直接从已配置模型中选择该预设的默认模型，并从该模型调取可用参数逐个填写（兼容 ComfyUI 工作流）。{{user_text}} 会被消息文本替换；默认 nd=文生图，nde=编辑模式",
     "default": [
       {
         "__template_key": "prompt_item",
         "trigger": "nd",
-        "prompt": "{{user_text}}"
+        "prompt": "{{user_text}}",
+        "model": "",
+        "params": {}
       },
       {
         "__template_key": "prompt_item",
         "trigger": "nde",
-        "prompt": "{{user_text}} --model edit"
+        "prompt": "{{user_text}} --model edit",
+        "model": "",
+        "params": {}
       }
     ],
     "templates": {
       "prompt_item": {
         "name": "预设提示词",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用预设",
+            "hint": "关闭后保留内容，但不参与触发词匹配；保存后生效。"
+          },
           "trigger": {
             "type": "str",
             "default": "",
             "description": "触发词",
             "hint": "消息以该词开头时触发此预设（默认 nd、nde）"
           },
+          "model": {
+            "type": "string",
+            "default": "",
+            "description": "默认模型",
+            "hint": "触发此预设时使用的模型。留空则用全局默认模型；可从插件内已启用模型、ComfyUI 工作流或 AstrBot 已有模型中选择"
+          },
           "prompt": {
             "type": "str",
             "default": "{{user_text}}",
             "description": "提示词模板",
-            "hint": "{{user_text}} 会被用户消息文本替换；可附带 --参数 值，如 {{user_text}} --model edit"
+            "hint": "{{user_text}} 会被用户消息文本替换。通常只写提示词；如需高级用法也可附带 --参数 值（会与本预设的固定参数合并，用户消息里的同名参数优先）"
+          },
+          "params": {
+            "type": "object",
+            "default": {},
+            "description": "固定参数",
+            "hint": "触发此预设时自动附加的参数，等效于在消息后写 --参数 值。可在 WebUI 中从所选模型调取可用参数添加；用户消息里的同名 --参数 会覆盖这里"
+          },
+          "apng": {
+            "type": "string",
+            "default": "",
+            "description": "APNG 包装",
+            "options": [
+              "",
+              "on",
+              "off"
+            ],
+            "option_labels": {
+              "": "跟随生图设置",
+              "on": "转成 APNG",
+              "off": "普通图片"
+            },
+            "hint": "触发此预设时是否把生成图包装成 APNG（首帧动画）。留「跟随生图设置」则使用「生图设置」里的全局开关"
+          },
+          "decompose": {
+            "type": "string",
+            "default": "",
+            "description": "生图预处理",
+            "options": [
+              "",
+              "on",
+              "off"
+            ],
+            "option_labels": {
+              "": "跟随全局",
+              "on": "预处理",
+              "off": "不预处理"
+            },
+            "hint": "触发此预设时，是否先用「文字加工 → 扩写」把用户原话处理成完整提示词再出图。留「跟随全局」则使用「文字加工配置」里的总开关"
+          },
+          "tag_prompt": {
+            "type": "str",
+            "default": "",
+            "description": "预处理用哪条扩写",
+            "hint": "选择「文字加工 → 扩写指令编辑」里的一条扩写指令：留空则用第一条启用的扩写指令"
           },
           "reference_image": {
             "type": "file",
@@ -103,6 +298,12 @@
     "hint": "留空则不发送",
     "default": "小猫正在搓屏幕中/ᐠ - ˕ -マ Ⳋ📱"
   },
+  "pending_message": {
+    "type": "string",
+    "description": "排队超时转后台补发提示",
+    "hint": "任务在超时时间内没跑完时发送此提示；之后插件会继续在后台等待，出图后自动补发原图。留空则不发送提示",
+    "default": "小猫还在排队等出图，出来马上补发原图/ᐠ - ˕ -マ Ⳋ"
+  },
   "drawing_cleanup_after_send": {
     "type": "bool",
     "description": "生图完全无痕清理",
@@ -126,7 +327,14 @@
     "description": "生图默认首帧",
     "hint": "仅供模型生成图片的首帧包装使用；未上传时使用插件内置默认图，与 APNG 制作首帧互不影响",
     "default": [],
-    "file_types": ["jpg", "jpeg", "png", "webp", "gif", "bmp"]
+    "file_types": [
+      "jpg",
+      "jpeg",
+      "png",
+      "webp",
+      "gif",
+      "bmp"
+    ]
   },
   "drawing_first_frame_duration": {
     "type": "int",
@@ -242,7 +450,12 @@
     "type": "list",
     "description": "APNG 外显金句列表",
     "hint": "随机抽取一句用于 APNG 成品的图片外显",
-    "default": ["你已被移出群聊", "[群主女装图]", "哎呦，你干嘛~", "Ciallo～(∠・ω< )⌒☆"]
+    "default": [
+      "你已被移出群聊",
+      "[群主女装图]",
+      "哎呦，你干嘛~",
+      "Ciallo～(∠・ω< )⌒☆"
+    ]
   },
   "apng_image_summary_quotes_files": {
     "type": "list",
@@ -410,9 +623,302 @@
     "hint": "每次重试等待时间按 2 的幂递增：2s、4s、8s...",
     "default": 2
   },
+  "download_retries": {
+    "type": "int",
+    "description": "生成图下载重试次数",
+    "hint": "结果图/参考图从服务商 CDN 下载失败（如超时）时自动重试的次数；0 表示不重试",
+    "default": 3
+  },
+  "download_retry_delay": {
+    "type": "int",
+    "description": "下载重试初始等待（秒）",
+    "hint": "每次重试等待时间按退避倍数递增：1s、2s、4s...",
+    "default": 1
+  },
+  "download_retry_backoff": {
+    "type": "int",
+    "description": "下载重试退避倍数",
+    "hint": "相邻两次重试等待时间的倍数；1 表示固定间隔，2 表示翻倍",
+    "default": 2
+  },
   "timeout": {
     "type": "int",
     "description": "任务超时（秒）",
-    "default": 300
+    "hint": "单次等待上限；超过后将转入后台继续等待，出图后自动补发原图（不再直接判失败）",
+    "default": 600
+  },
+  "llm_tag_enable": {
+    "type": "bool",
+    "description": "默认启用生图预处理（扩写）",
+    "default": false,
+    "hint": "总开关：出图前是否先用「文字加工 → 扩写」把用户原话处理成完整提示词。预设未单独指定时跟随这里；关闭时用户原话直接提交给画图模型"
+  },
+  "llm_tag_provider_id": {
+    "type": "string",
+    "description": "（已停用）拆解使用的模型提供商",
+    "default": "",
+    "hint": "3.9.2 起预处理改用「文字加工」里扩写指令自己的提供商，此项不再生效，仅保留以兼容旧配置"
+  },
+  "llm_tag_model": {
+    "type": "string",
+    "description": "（已停用）拆解使用的模型",
+    "default": "",
+    "hint": "3.9.2 起预处理改用扩写指令自己的模型，此项不再生效，仅保留以兼容旧配置"
+  },
+  "llm_tag_system_prompt": {
+    "type": "text",
+    "description": "（已停用）拆解系统提示词",
+    "default": "",
+    "hint": "3.9.2 起预处理改用扩写指令自己的系统提示词，此项不再生效，仅保留以兼容旧配置"
+  },
+  "llm_tag_prompt": {
+    "type": "text",
+    "description": "（已停用）拆解提示词模板",
+    "default": "",
+    "hint": "3.9.2 起预处理改用扩写指令自己的提示词模板，此项不再生效，仅保留以兼容旧配置"
+  },
+  "llm_tag_timeout": {
+    "type": "int",
+    "description": "（已停用）拆解超时（秒）",
+    "default": 60,
+    "hint": "3.9.2 起预处理改用扩写指令自己的超时，此项不再生效，仅保留以兼容旧配置"
+  },
+  "llm_tag_fallback": {
+    "type": "bool",
+    "description": "预处理失败时回退原文本",
+    "default": true,
+    "hint": "开启后，预处理失败（超时/报错/空结果）时直接用用户原文本绘图；关闭则回复失败提示、不消耗绘图额度"
+  },
+  "expand_presets": {
+    "type": "template_list",
+    "description": "扩写提示词指令（正文在 WebUI「文字加工 → 扩写提示词」页里改，这里通常不用动）",
+    "hint": "独立分区：触发词 + 扩写模板。用户发送「触发词 简短描述」时，只回复一段更详细、更完整的提示词，不生成图片。",
+    "default": [],
+    "templates": {
+      "expand_item": {
+        "name": "扩写指令",
+        "items": {
+          "trigger": {
+            "type": "str",
+            "default": "",
+            "description": "触发词",
+            "hint": "消息以该词开头时触发扩写，例如「扩 一只晒太阳的猫」"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用",
+            "hint": "关闭后该触发词不再响应，消息会继续走其它逻辑"
+          },
+          "prompt": {
+            "type": "str",
+            "default": "",
+            "description": "提示词模板",
+            "hint": "{{user_text}} 会被替换为用户输入的简短描述；只回复模型输出，不生成图片"
+          },
+          "system_prompt": {
+            "type": "text",
+            "default": "",
+            "description": "系统提示词",
+            "hint": "作为 system 提示栏位发送；留空则不发送系统提示词"
+          },
+          "model": {
+            "type": "string",
+            "default": "",
+            "description": "使用的模型",
+            "hint": "覆盖全局选择的对话模型；留空跟随全局设置"
+          },
+          "timeout": {
+            "type": "int",
+            "default": 0,
+            "description": "超时（秒）",
+            "hint": "单次调用等待上限；0 表示跟随全局超时"
+          },
+          "isolation": {
+            "type": "string",
+            "default": "",
+            "options": [
+              "",
+              "on",
+              "off"
+            ],
+            "option_labels": {
+              "": "跟随扩写全局开关",
+              "on": "强制开启",
+              "off": "强制关闭"
+            },
+            "description": "独立会话",
+            "hint": "跟随全局＝由「扩写启用独立会话标识」决定；强制开启/关闭只影响这一条指令"
+          }
+        }
+      }
+    }
+  },
+  "extract_presets": {
+    "type": "template_list",
+    "description": "提取图片形象指令（正文在 WebUI「文字加工 → 提取提示词」页里改，这里通常不用动）",
+    "hint": "独立分区：触发词 + 提取模板。用户发送「触发词 + 图片」时，用对话模型读取图片，只回复可复现该形象的特征描述或 tag，不生成图片。",
+    "default": [],
+    "templates": {
+      "extract_item": {
+        "name": "形象提取",
+        "items": {
+          "trigger": {
+            "type": "str",
+            "default": "",
+            "description": "触发词",
+            "hint": "消息以该词开头时触发形象提取，后面可以附图，也可以回复一张图"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用",
+            "hint": "关闭后该触发词不再响应，消息会继续走其它逻辑"
+          },
+          "prompt": {
+            "type": "str",
+            "default": "",
+            "description": "提示词模板",
+            "hint": "不需要 {{user_text}}：图片会一起发送给模型；可自行补充侧重（如只提取发型、只提取服装）（图片会一并交给支持视觉的模型，模板不需要 {{user_text}}）"
+          },
+          "system_prompt": {
+            "type": "text",
+            "default": "",
+            "description": "系统提示词",
+            "hint": "作为 system 提示栏位发送；留空则不发送系统提示词"
+          },
+          "model": {
+            "type": "string",
+            "default": "",
+            "description": "使用的模型",
+            "hint": "覆盖全局选择的对话模型；留空跟随全局设置"
+          },
+          "timeout": {
+            "type": "int",
+            "default": 0,
+            "description": "超时（秒）",
+            "hint": "单次调用等待上限；0 表示跟随全局超时"
+          },
+          "isolation": {
+            "type": "string",
+            "default": "",
+            "options": [
+              "",
+              "on",
+              "off"
+            ],
+            "option_labels": {
+              "": "跟随提取全局开关",
+              "on": "强制开启",
+              "off": "强制关闭"
+            },
+            "description": "独立会话",
+            "hint": "跟随全局＝由「提取形象启用独立会话标识」决定；强制开启/关闭只影响这一条指令"
+          }
+        }
+      }
+    }
+  },
+  "expand_provider_id": {
+    "type": "string",
+    "description": "扩写使用的模型提供商",
+    "default": "",
+    "hint": "留空使用「扩写指示」里各项的模型设置；建议选择支持视觉的模型，以便读懂附图"
+  },
+  "expand_model": {
+    "type": "string",
+    "description": "扩写使用的模型",
+    "default": "",
+    "hint": "覆盖提供商默认模型；留空使用提供商自己的模型。仅在指定了提供商时生效"
+  },
+  "expand_start_message": {
+    "type": "string",
+    "description": "扩写开始提示",
+    "default": "正在扩写提示词，请稍候…",
+    "hint": "收到指令后先发这一句，让用户知道模型已经在处理；留空则不发送。可用 {trigger} 表示触发的词"
+  },
+  "expand_end_message": {
+    "type": "string",
+    "description": "扩写结束提示",
+    "default": "",
+    "hint": "在扩写结果后面追加的一段说明；留空则不追加"
+  },
+  "extract_provider_id": {
+    "type": "string",
+    "description": "提取形象使用的模型提供商",
+    "default": "",
+    "hint": "留空使用「提取图片形象」里各项的模型设置；必须选择支持视觉（能读图）的模型"
+  },
+  "extract_model": {
+    "type": "string",
+    "description": "提取形象使用的模型",
+    "default": "",
+    "hint": "覆盖提供商默认模型；留空使用提供商自己的模型。仅在指定了提供商时生效"
+  },
+  "extract_global_timeout": {
+    "type": "int",
+    "description": "提取形象超时（秒）",
+    "default": 90,
+    "hint": "读图比纯文字慢，建议不低于 60 秒；单项未单独设置超时时使用"
+  },
+  "extract_start_message": {
+    "type": "string",
+    "description": "提取形象开始提示",
+    "default": "正在识别图片形象，请稍候…",
+    "hint": "收到指令后先发这一句；留空则不发送。可用 {trigger} 表示触发的词"
+  },
+  "extract_end_message": {
+    "type": "string",
+    "description": "提取形象结束提示",
+    "default": "",
+    "hint": "在提取结果后面追加的一段说明；留空则不追加"
+  },
+  "expand_isolation": {
+    "type": "bool",
+    "description": "扩写启用独立会话标识",
+    "default": false,
+    "hint": "开启后，每次扩写（含生图前的预处理）都会附带一次性 user 会话标识，避免反代复用上下文；关闭后恢复原来的调用方式。单条指令可在自己卡片里单独设置，覆盖这个开关。"
+  },
+  "extract_isolation": {
+    "type": "bool",
+    "description": "提取形象启用独立会话标识",
+    "default": false,
+    "hint": "开启后，每次提取形象都会附带一次性 user 会话标识，避免反代复用上下文；关闭后恢复原来的调用方式。单条指令可在自己卡片里单独设置，覆盖这个开关。"
+  },
+  "expand_global_timeout": {
+    "type": "int",
+    "description": "扩写超时（秒）",
+    "default": 60,
+    "hint": "单项未单独设置超时时的默认等待上限"
+  },
+  "extract_at_avatar": {
+    "type": "bool",
+    "description": "提取形象时支持 @ 头像",
+    "default": true,
+    "hint": "当前消息、引用消息、合并转发都没有图片时，取第一个被 @ 的人的头像；会跳过 @全体成员 和机器人自己"
+  },
+  "extract_image_priority": {
+    "type": "string",
+    "description": "提取形象的采图优先级",
+    "default": "message,quoted,forward,avatar",
+    "hint": "在「文字加工配置」里用浮块管理：上方浮块＝已启用，从左到右依次尝试、取到即停；点下面没启用的项加到最右边，点浮块上的 × 取消启用。可选：本条消息的图、引用消息的图、合并转发里的图、第一个被 @ 的人的头像。修改后需重载插件"
+  },
+  "extract_priority_sort_mode": {
+    "type": "string",
+    "description": "取图顺序的排序方式",
+    "default": "buttons",
+    "hint": "buttons=用浮块上的 ← → 按钮调整先后；drag=按住浮块直接拖动排序。两种方式二选一，取消启用（×）在两种方式下都能用"
+  },
+  "llm_history_limit": {
+    "type": "int",
+    "description": "扩写/提取调用历史保留条数",
+    "default": 500,
+    "hint": "超出后自动删除最旧记录；0 表示不限制"
+  },
+  "command_end_at_sender": {
+    "type": "bool",
+    "description": "扩写/提取回复时 @ 发送者",
+    "default": true,
+    "hint": "关闭后只回纯文字，不带 @"
   }
 }

@@ -3,12 +3,17 @@ import time
 import uuid
 
 
+# 预留槽位最多占用这么久；超时视为「事件被取消 / 卡死」，自动释放，避免用户被永久限流
+PENDING_TTL_SECONDS = 600
+
+
 class RateLimiter:
     def __init__(self, config, clock=time.monotonic):
         self.config = config
         self.clock = clock
         self.completed = {}
         self.pending = {}
+        self._pending_at = {}
 
     def reconfigure(self, config):
         """Apply new rules without losing completed or in-flight usage."""
@@ -39,18 +44,38 @@ class RateLimiter:
                 self.completed[key] = fresh
             else:
                 self.completed.pop(key, None)
+        self._expire_pending(now)
         pending = sum(owner == uid for owner in self.pending.values())
         for rule in rules:
-            values = [t for t in self.completed.get(uid, []) if now - t < rule['window_seconds']]
+            values = sorted(t for t in self.completed.get(uid, []) if now - t < rule['window_seconds'])
             if len(values) + pending >= rule['max_count']:
-                retry = max(1, int(rule['window_seconds'] - (now - min(values))) + 1) if values else 1
+                retry = max(1, int(rule['window_seconds'] - (now - values[0])) + 1) if values else 1
                 return None, rule, retry
         token = uuid.uuid4().hex
         self.pending[token] = uid
+        self._pending_at[token] = now
         return token, None, 0
+
+    def _expire_pending(self, now=None):
+        """回收超时未结束的预留槽位（事件被平台取消、拆解卡死等）。"""
+        now = self.clock() if now is None else now
+        stale = [token for token, at in self._pending_at.items()
+                 if now - at > PENDING_TTL_SECONDS]
+        for token in stale:
+            self._pending_at.pop(token, None)
+            self.pending.pop(token, None)
+        if stale:
+            return len(stale)
+        return 0
+
+    def release(self, token):
+        """主动释放预留槽位（事件被取消时用），不计入成功次数。"""
+        self.pending.pop(token, None)
+        self._pending_at.pop(token, None)
 
     def finish(self, token, success=False):
         uid = self.pending.pop(token, None)
+        self._pending_at.pop(token, None)
         if uid is not None and success:
             self.completed.setdefault(uid, []).append(self.clock())
 

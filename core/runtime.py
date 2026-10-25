@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .downloader import Downloader
+from .command_presets import CommandPresetStore
+from .llm_history import LlmHistoryStore
 from .handler import DrawingHandler
 from .output import OutputService
 from .prompt_manager import PromptManager
@@ -20,6 +22,9 @@ class RuntimeServices:
     providers: dict
     templates: TemplateManager
     prompt_manager: PromptManager
+    expand_store: CommandPresetStore
+    extract_store: CommandPresetStore
+    llm_history: LlmHistoryStore
     whitelist_guard: WhitelistGuard
     downloader: Downloader
     handler: DrawingHandler
@@ -39,9 +44,16 @@ class RuntimeServices:
     ) -> "RuntimeServices":
         """Build a complete replacement before exposing any of its parts."""
         ensure_provider_config(config)
-        providers = create_providers(config, context=context)
+        providers = create_providers(config, context=context, data_dir=data_dir)
         templates = TemplateManager(config.get("model_templates", []))
         prompt_manager = PromptManager(config.get("prompt", []), data_dir, config=config)
+        expand_store = CommandPresetStore(
+            "expand", config.get("expand_presets", []), data_dir, config=config
+        )
+        extract_store = CommandPresetStore(
+            "extract", config.get("extract_presets", []), data_dir, config=config
+        )
+        llm_history = LlmHistoryStore(data_dir)
         whitelist_guard = WhitelistGuard(
             enabled=bool(config.get("whitelist_enabled", False)),
             group_whitelist=config.get("group_whitelist", []),
@@ -49,7 +61,13 @@ class RuntimeServices:
             data_dir=data_dir,
             config=config,
         )
-        downloader = Downloader(save_dir, proxy=config.get("proxy") or None)
+        downloader = Downloader(
+            save_dir,
+            proxy=config.get("proxy") or None,
+            retries=int(config.get("download_retries", 3) or 0),
+            retry_delay=float(config.get("download_retry_delay", 1) or 0),
+            retry_backoff=float(config.get("download_retry_backoff", 2) or 2),
+        )
         handler = DrawingHandler(
             templates=templates,
             default_text_model=config.get("default_text_model", ""),
@@ -66,6 +84,9 @@ class RuntimeServices:
             providers=providers,
             templates=templates,
             prompt_manager=prompt_manager,
+            expand_store=expand_store,
+            extract_store=extract_store,
+            llm_history=llm_history,
             whitelist_guard=whitelist_guard,
             downloader=downloader,
             handler=handler,

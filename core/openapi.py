@@ -11,9 +11,15 @@
 import asyncio
 import base64
 import logging
-from typing import Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 import aiohttp
+from .key_rotation import (
+    KeySwitchError,
+    is_switchable_status,
+    normalize_keys,
+    run_with_keys,
+)
 from .request_profiles import normalize_openai_image_request
 
 logger = logging.getLogger("neko_draw")
@@ -34,8 +40,10 @@ class OpenAPIClient:
         timeout: float = 300,
         max_concurrency: int = 2,
         custom_headers: Optional[Mapping[str, str]] = None,
+        api_keys: Optional[object] = None,
     ):
-        self.api_key = api_key
+        self.api_keys = normalize_keys(api_key, api_keys)
+        self.api_key = self.api_keys[0] if self.api_keys else ""
         self.base_url = base_url.rstrip("/")
         self.proxy = proxy
         self.timeout = timeout
@@ -54,33 +62,49 @@ class OpenAPIClient:
             )
         return self._session
 
-    def _headers(self) -> dict:
+    def _headers(self, key: Optional[str] = None) -> dict:
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {key or self.api_key}",
             "Content-Type": "application/json",
         }
         headers.update(self.custom_headers)
         return headers
 
-    async def generate(self, model: str, payload: dict) -> list[str]:
+    async def generate(
+        self, model: str, payload: dict, *,
+        on_task_id: Optional[Callable[[str], None]] = None,
+    ) -> list[str]:
         """提交生成并返回图片 URL 列表（同步接口，无需轮询）。
 
         model 放入请求体；端点从 payload 的 _endpoint 取（弹出），默认 images/generations。
+        配了多个 Key 时按“主 Key → 备用 Key”顺序提交，遇到认证/余额/限流/网络/
+        服务端错误自动换下一个 Key。OpenAI 兼容接口是同步返回、没有任务 ID，
+        因此忽略 ``on_task_id``。
         """
         endpoint, payload = normalize_openai_image_request(self.base_url, model, payload)
         payload["model"] = model
         url = f"{self.base_url}/{endpoint}"
-        async with self._semaphore:
-            try:
-                async with self.session.post(
-                    url, json=payload, headers=self._headers(), proxy=self.proxy
-                ) as resp:
-                    data = await resp.json()
-            except aiohttp.ClientError as e:
-                raise OpenAPIError(f"请求失败: {e}") from e
-            if resp.status != 200:
-                raise OpenAPIError(f"HTTP {resp.status}: {data}")
-        return self._extract_urls(data)
+
+        async def run(key: Optional[str]):
+            async with self._semaphore:
+                try:
+                    async with self.session.post(
+                        url, json=payload, headers=self._headers(key), proxy=self.proxy
+                    ) as resp:
+                        data = await resp.json()
+                except aiohttp.ClientError as e:
+                    raise KeySwitchError(f"请求失败: {e}") from e
+                if resp.status != 200:
+                    message = f"HTTP {resp.status}: {data}"
+                    if is_switchable_status(resp.status):
+                        raise KeySwitchError(message)
+                    raise OpenAPIError(message)
+            return self._extract_urls(data)
+
+        try:
+            return await run_with_keys(self.api_keys, run, logger, "OpenAI 兼容")
+        except KeySwitchError as exc:
+            raise OpenAPIError(exc.message) from exc
 
     @staticmethod
     def _extract_urls(data: dict) -> list[str]:

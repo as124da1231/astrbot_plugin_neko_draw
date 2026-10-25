@@ -70,7 +70,7 @@
             <div class="panel-title"><div><span class="section-index">03—A</span><h2>筛选作品</h2></div><button class="text-button" id="reset-filters">重置条件</button></div>
             <form class="filter-grid" id="history-filters">
               <label><span>用户 ID</span><input name="user_id" placeholder="输入用户 ID"></label>
-              <label><span>状态</span><select name="status"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+              <label><span>状态</span><select name="status"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option><option value="pending">排队中</option></select></label>
               <label><span>起始日期</span><input name="start_date" type="date"></label>
               <label><span>结束日期</span><input name="end_date" type="date"></label>
               <button class="primary-button filter-submit" type="submit">{{ icon('search', 17) }}查询</button>
@@ -110,6 +110,8 @@
     <button class="floating-reload" id="global-reload" type="button" title="重新加载配置" aria-label="重新加载配置">{{ icon('refresh', 20) }}</button>
     <button class="floating-save" id="global-save" type="button" data-save-config disabled title="保存并重载" aria-label="保存并重载">{{ icon('save', 20) }}</button>
   </div>
+
+  <button class="nav-launcher" id="nav-launcher" type="button" aria-label="打开导航" aria-expanded="false">{{ icon('menu', 22) }}</button>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
   <dialog class="modal" id="detail-modal"><button class="modal-close" data-close-modal aria-label="关闭">{{ icon('close') }}</button><div id="detail-content"></div></dialog>

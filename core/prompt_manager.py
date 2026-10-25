@@ -21,16 +21,35 @@ from typing import Optional
 from .storage import read_json, write_json
 
 DEFAULT_PROMPTS = [
-    {"trigger": "nd", "prompt": "{{user_text}}", "reference_image": [], "reference_image_position": "before"},
-    {"trigger": "nde", "prompt": "{{user_text}} --model edit", "reference_image": [], "reference_image_position": "before"},
+    {"trigger": "nd", "prompt": "{{user_text}}", "reference_image": [], "reference_image_position": "before", "model": "", "params": {}},
+    {"trigger": "nde", "prompt": "{{user_text}} --model edit", "reference_image": [], "reference_image_position": "before", "model": "", "params": {}},
 ]
 
 
+def _normalize_params(raw) -> dict:
+    """把预设的固定参数归一化为 {str: value}；非法输入返回空字典。"""
+    if isinstance(raw, dict):
+        return {str(k): v for k, v in raw.items() if str(k).strip()}
+    return {}
+
+
+def _normalize_choice(raw) -> str:
+    """把三态开关归一化为 ""（跟随全局）/ "on" / "off"。"""
+    value = str(raw or "").strip().lower()
+    return value if value in ("on", "off") else ""
+
+
 def _normalize_item(item) -> Optional[dict]:
-    """将配置项归一化为 {"trigger": str, "prompt": str, "reference_image": ..., "reference_image_position": str} 字典。
+    """将配置项归一化为预设字典。
+
+    字段：trigger / prompt / model / params / apng / decompose / tag_prompt /
+    reference_image / reference_image_position。
+
+    ``tag_prompt`` 现在存的是「生图预处理用哪条扩写指令」的触发词，
+    不再是提示词模板本身。
 
     兼容两种输入格式：
-    - 新格式 dict: {"trigger": "...", "prompt": "...", "reference_image": [...], "reference_image_position": "before"}
+    - 新格式 dict: {"trigger": "...", "prompt": "...", "model": "...", "params": {...}, "reference_image": [...]}
     - 旧格式 str: "trigger prompt_template --params"
     """
     if isinstance(item, dict):
@@ -43,7 +62,14 @@ def _normalize_item(item) -> Optional[dict]:
         if trigger:
             result = {
                 "trigger": trigger,
+                "enabled": item.get("enabled", True) is not False,
                 "prompt": prompt,
+                "model": str(item.get("model", "")).strip(),
+                "params": _normalize_params(item.get("params")),
+                "apng": _normalize_choice(item.get("apng")),
+                "decompose": _normalize_choice(item.get("decompose")),
+                # 预设级「拆解用户提示词模板」：留空表示跟随全局，填写则覆盖全局模板
+                "tag_prompt": str(item.get("tag_prompt", "") or "").strip(),
                 "reference_image": reference_image,
                 "reference_image_position": reference_image_position,
             }
@@ -60,7 +86,9 @@ def _normalize_item(item) -> Optional[dict]:
         if tokens:
             trigger = tokens[0]
             prompt = " ".join(tokens[1:]) if len(tokens) > 1 else ""
-            return {"trigger": trigger, "prompt": prompt, "reference_image": [], "reference_image_position": "before"}
+            return {"trigger": trigger, "prompt": prompt, "model": "", "params": {},
+                    "apng": "", "decompose": "", "tag_prompt": "",
+                    "reference_image": [], "reference_image_position": "before"}
     return None
 
 
@@ -172,12 +200,21 @@ class PromptManager:
         prompt_body = prompt_body.strip()
         if not trigger:
             return False, "用法：/nc pa <触发词> <提示词内容>"
-        new_item = {"trigger": trigger, "prompt": prompt_body, "reference_image": [], "reference_image_position": "before", "__template_key": "prompt_item"}
+        new_item = {"trigger": trigger, "prompt": prompt_body, "model": "", "params": {},
+                    "apng": "", "decompose": "", "tag_prompt": "",
+                    "reference_image": [], "reference_image_position": "before", "__template_key": "prompt_item"}
         for i, p in enumerate(self.prompts):
             if self.get_trigger(p) == trigger:
-                # 保留已有的 reference_image 和 position（命令行添加不覆盖 WebUI 配置）
+                # 保留已有的参考图/位置/默认模型/固定参数/APNG/拆解/拆解模板（命令行添加不覆盖 WebUI 配置）
                 new_item["reference_image"] = p.get("reference_image", [])
                 new_item["reference_image_position"] = p.get("reference_image_position", "before")
+                new_item["model"] = str(p.get("model", "") or "").strip()
+                new_item["params"] = _normalize_params(p.get("params"))
+                new_item["apng"] = _normalize_choice(p.get("apng"))
+                new_item["decompose"] = _normalize_choice(p.get("decompose"))
+                new_item["tag_prompt"] = str(p.get("tag_prompt", "") or "").strip()
+                # 停用状态必须一并保留：命令行改提示词不应该把用户停用的预设重新启用
+                new_item["enabled"] = p.get("enabled", True) is not False
                 # 已有标识则沿用，避免更新时把模板标识抹掉
                 if p.get("__template_key"):
                     new_item["__template_key"] = p["__template_key"]
@@ -201,19 +238,80 @@ class PromptManager:
         return [self.get_trigger(p) for p in self.prompts]
 
     def get_detail(self, trigger: str) -> Optional[str]:
-        """返回 "trigger prompt" 格式的完整字符串，用于命令展示。"""
+        """返回预设详情（触发词 + 提示词模板 + 默认模型 + 固定参数），用于命令展示。"""
         trigger = trigger.strip()
         for p in self.prompts:
             if self.get_trigger(p) == trigger:
-                return f"{p['trigger']} {p['prompt']}".strip()
+                lines = [f"{p['trigger']} {p.get('prompt', '')}".strip()]
+                model = str(p.get("model", "") or "").strip()
+                if model:
+                    lines.append(f"默认模型：{model}")
+                params = p.get("params") or {}
+                if isinstance(params, dict) and params:
+                    lines.append("固定参数：" + json.dumps(params, ensure_ascii=False))
+                apng = str(p.get("apng", "") or "").strip()
+                if apng:
+                    lines.append("APNG 包装：" + ("转成 APNG" if apng == "on" else "普通图片"))
+                decompose = str(p.get("decompose", "") or "").strip()
+                if decompose:
+                    lines.append("生图预处理：" + ("开启" if decompose == "on" else "关闭"))
+                tag_prompt = str(p.get("tag_prompt", "") or "").strip()
+                if tag_prompt:
+                    lines.append(f"预处理用扩写：{tag_prompt}")
+                return "\n".join(lines)
         return None
+
+    def get_by_trigger(self, trigger: str) -> Optional[dict]:
+        """按触发词返回完整的预设字典（含 model / params / 参考图等）。"""
+        trigger = str(trigger or "").strip()
+        if not trigger:
+            return None
+        for p in self.prompts:
+            if p.get("enabled", True) is False:
+                continue
+            if self.get_trigger(p) == trigger:
+                return p
+        return None
+
+    @staticmethod
+    def _matchable(text: str) -> str:
+        """把「触发词@某人」补成「触发词 @某人」，与 parser 的归一化保持一致。
+
+        parser 内部会做这一步，但参考图匹配是另一个入口；不归一化的话
+        `nd@某画师 一只猫` 会被 parser 认出来、却在这里匹配不上，
+        预设里配的风格参考图就被静默丢掉了。
+        """
+        import re
+        return re.sub(r"(?<=[^\s@])@", " @", str(text or ""))
+
+    def get_preset_for_text(self, text: str) -> Optional[dict]:
+        """按消息文本匹配预设（最长触发词优先），返回完整预设字典或 None。
+
+        匹配规则与 parser.parse_prompt_message 一致：text 等于触发词或以“触发词+空格”开头。
+        """
+        text = self._matchable(text)
+        if not text or not self.prompts:
+            return None
+        best = None
+        best_len = -1
+        for p in self.prompts:
+            if p.get("enabled", True) is False:
+                continue
+            trigger = self.get_trigger(p)
+            if not trigger:
+                continue
+            if text == trigger or text.startswith(trigger + " "):
+                if len(trigger) > best_len:
+                    best_len = len(trigger)
+                    best = p
+        return best
 
     def get_all(self) -> list[str]:
         """返回字符串列表，供 parser.parse_prompt_message 匹配使用。
 
         每项格式："trigger prompt_template"，与旧版完全兼容。
         """
-        return [f"{p['trigger']} {p['prompt']}".strip() for p in self.prompts]
+        return [f"{p['trigger']} {p['prompt']}".strip() for p in self.prompts if p.get("enabled", True) is not False]
 
     def get_reference_image_for_text(self, text: str):
         """根据消息文本匹配预设，返回 (参考图原始配置值, 位置) 元组。
@@ -225,8 +323,12 @@ class PromptManager:
         """
         if not text or not self.prompts:
             return None
+        text = self._matchable(text)
         candidates = []
         for p in self.prompts:
+            # 停用的预设不参与任何匹配：包括参考图注入，否则“停用”只停了一半
+            if p.get("enabled", True) is False:
+                continue
             trigger = self.get_trigger(p)
             if not trigger:
                 continue

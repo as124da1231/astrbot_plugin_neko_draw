@@ -1,4 +1,4 @@
-"""Render the dependency-free AstrBot plugin page from Jinja2 templates.
+﻿"""Render the dependency-free AstrBot plugin page from Jinja2 templates.
 
 Run from the plugin root with::
 
@@ -9,6 +9,8 @@ static iframe documents at runtime. Jinja2 is therefore a build dependency,
 not a server/runtime dependency of the plugin.
 """
 from pathlib import Path
+import re
+import sys
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
@@ -16,6 +18,16 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = PLUGIN_ROOT / "dashboard" / "templates"
 OUTPUT = PLUGIN_ROOT / "pages" / "neko-draw" / "index.html"
+METADATA = PLUGIN_ROOT / "metadata.yaml"
+
+
+def read_version() -> str:
+    """版本号只认 metadata.yaml，避免页面里写死的旧版本号再次漂移。"""
+    text = METADATA.read_text(encoding="utf-8-sig")
+    matched = re.search(r"^version:\s*(\S+)", text, re.M)
+    if not matched:
+        raise SystemExit(f"metadata.yaml 里没有 version 字段：{METADATA}")
+    return matched.group(1)
 
 
 def main() -> None:
@@ -29,7 +41,7 @@ def main() -> None:
     html = env.get_template("index.html.j2").render(
         app_name="Neko Draw",
         plugin_name="猫娘画图",
-        version="2.2.7",
+        version=read_version(),
         themes=(
             {"id": "forest", "name": "森林实验室", "swatch": "#63b995"},
             {"id": "atelier", "name": "奶油画室", "swatch": "#f4b83f"},
@@ -37,6 +49,20 @@ def main() -> None:
         ),
     )
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    old = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
+    if old and old != html:
+        # 模板已明显落后于线上页面（后来手写的「文字加工」页、复制按钮等不在模板里）。
+        # 默认拒绝覆盖，避免一次手滑就把页面回退；确需用模板重建时加 --force。
+        if "--force" not in sys.argv:
+            raise SystemExit(
+                "现有页面与模板不一致，已拒绝覆盖。\n"
+                f"  页面: {OUTPUT}\n"
+                f"  模板: {TEMPLATE_ROOT / 'index.html.j2'}\n"
+                "确认要用模板重建时：python dashboard/render.py --force"
+            )
+        backup = OUTPUT.with_suffix(".html.bak")
+        backup.write_text(old, encoding="utf-8")
+        print(f"已备份旧页面到 {backup}")
     OUTPUT.write_text(html, encoding="utf-8")
     print(f"Rendered {OUTPUT}")
 

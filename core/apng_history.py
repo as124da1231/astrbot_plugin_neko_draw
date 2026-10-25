@@ -52,16 +52,29 @@ class ApngHistoryStore:
         except (OSError,ValueError): pass
     def _delete_many(self,ids):
         if not ids:return 0
-        marks=",".join("?" for _ in ids)
+        deleted=0; assets=[]; legacy=[]
+        # 分批 DELETE：SQLite 的 SQL 变量数量有上限（新版本约 32766），
+        # 一次塞太多会在“清空作品”或“超上限清理”时直接抛错，用户看到 500。
         with self._lock,self._connect() as conn:
-            assets=conn.execute(f"SELECT file_path,thumbnail_path FROM apng_assets WHERE record_id IN ({marks})",ids).fetchall(); legacy=conn.execute(f"SELECT file_path FROM apng_creations WHERE id IN ({marks})",ids).fetchall(); conn.execute(f"DELETE FROM apng_assets WHERE record_id IN ({marks})",ids); cur=conn.execute(f"DELETE FROM apng_creations WHERE id IN ({marks})",ids)
+            for start in range(0,len(ids),400):
+                chunk=ids[start:start+400]
+                marks=",".join("?" for _ in chunk)
+                assets+=conn.execute(f"SELECT file_path,thumbnail_path FROM apng_assets WHERE record_id IN ({marks})",chunk).fetchall()
+                legacy+=conn.execute(f"SELECT file_path FROM apng_creations WHERE id IN ({marks})",chunk).fetchall()
+                conn.execute(f"DELETE FROM apng_assets WHERE record_id IN ({marks})",chunk)
+                cur=conn.execute(f"DELETE FROM apng_creations WHERE id IN ({marks})",chunk)
+                deleted+=int(cur.rowcount or 0)
         for value in set([v for r in assets for v in (r["file_path"],r["thumbnail_path"])]+[r["file_path"] for r in legacy]): self._safe_delete(value)
-        return int(cur.rowcount)
+        return deleted
     def delete(self,record_id): return self._delete_many([int(record_id)])>0
     def clear(self):
         with self._lock,self._connect() as conn: ids=[r[0] for r in conn.execute("SELECT id FROM apng_creations").fetchall()]
         return self._delete_many(ids)
     def enforce_limit(self,limit):
         limit=max(0,int(limit))
-        with self._lock,self._connect() as conn: ids=[r[0] for r in conn.execute("SELECT id FROM apng_creations ORDER BY timestamp DESC,id DESC LIMIT -1 OFFSET ?",(limit,)).fetchall()]
-        return self._delete_many(ids)
+        deleted=0
+        while True:
+            with self._lock,self._connect() as conn: ids=[r[0] for r in conn.execute("SELECT id FROM apng_creations ORDER BY timestamp DESC,id DESC LIMIT 500 OFFSET ?",(limit,)).fetchall()]
+            if not ids: break
+            deleted+=self._delete_many(ids)
+        return deleted
