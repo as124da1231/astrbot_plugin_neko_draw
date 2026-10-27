@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+env/
+
+# 测试与本地产物
+output/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 运行时数据（不入库）
+plugin_data/
+data/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 打包残留
+*.bak
+*.tmp
+*.zip

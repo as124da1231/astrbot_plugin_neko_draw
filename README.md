@@ -1,4 +1,4 @@
-﻿# 猫娘画图
+# 猫娘画图
 
 ![猫娘画图](./logo.png)
 
@@ -17,7 +17,7 @@
 
 支持 WaveSpeed、RunningHub（含 ComfyUI 工作流）、兼容 OpenAI Images Generations 格式的服务，以及 AstrBot 中已经配置的提供商，并提供模型管理、预设提示词、生成历史、白名单、限流和独立 WebUI 控制台。
 
-> 本 README 只说明**当前版本怎么用**。历史版本改了什么见 [CHANGELOG.md](CHANGELOG.md)，代码分层见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+> 本 README 只说明**当前版本怎么用**。代码分层与模块职责见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 目录
 

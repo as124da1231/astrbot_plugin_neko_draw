@@ -1,0 +1,10 @@
+# 统一使用 LF，避免 Windows 与 Linux 换行符互相污染
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.ico binary

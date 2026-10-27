@@ -1,4 +1,4 @@
-﻿"""Render the dependency-free AstrBot plugin page from Jinja2 templates.
+"""Render the dependency-free AstrBot plugin page from Jinja2 templates.
 
 Run from the plugin root with::
 
